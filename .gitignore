@@ -1,0 +1,11 @@
+node_modules/
+.local/
+coverage/
+*.log
+*.tmp
+*.png
+*.jpg
+*.har
+trace*.json
+/AGENTS.md
+/docs/superpowers/

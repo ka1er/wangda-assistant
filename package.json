@@ -1,0 +1,16 @@
+{
+  "name": "wangda-assistant",
+  "version": "0.1.0-beta.5",
+  "private": true,
+  "type": "module",
+  "description": "中移网大多专区任务队列与连续学习助手",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "build:diagnostics": "node scripts/build-playback-diagnostics.mjs",
+    "check:diagnostics": "npm run build:diagnostics && node --check dist/wangda-playback-diagnostics.user.js && node --test tests/playback-diagnostics*.test.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "check": "npm run build && npm run build:diagnostics && node --check dist/wangda-assistant.user.js && node --check dist/wangda-playback-diagnostics.user.js && npm test"
+  },
+  "engines": { "node": ">=24.0.0" },
+  "devDependencies": { "jsdom": "29.1.1" }
+}
