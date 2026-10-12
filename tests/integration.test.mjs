@@ -98,8 +98,8 @@ test('真实adapter：已完成卡片手工选择后仍检查video→图文→�
 test('真实面板：编辑焦点和脏名称保留、重复诊断、收起后暂停仍退出当前页', async () => {
   const f = setup(); f.panel.open(); await f.click('add'); const target = f.root.querySelector('[name="target"]'); target.focus(); target.value = '编辑中'; target.dispatchEvent(new f.w.Event('input'));
   await f.click('diagnose'); await f.click('diagnose'); assert.equal(target.value, '编辑中'); assert.equal(f.root.activeElement, target); assert.equal(f.root.querySelector('[data-action="diagnose"]').disabled, false);
-  await f.click('back'); await f.collect(); await f.click('start'); await f.c.tick(); f.course('c'); await f.click('toggle'); assert.equal(f.root.querySelector('.body').hidden, true); await f.click('pause'); assert.equal(f.c.getState().status, 'paused'); assert.equal(f.w.location.hash, '#/study/subject/detail/s');
-  f.w.location.hash = '#/study/course/detail/subject-course/c/6/s'; f.course('c'); await f.click('pause'); assert.equal(f.w.location.hash, '#/study/subject/detail/s'); f.close();
+  await f.click('back'); await f.collect(); await f.click('start'); await f.c.tick(); f.course('c'); await f.click('toggle'); assert.equal(f.root.querySelector('.body').hidden, true); await f.click('run-toggle'); assert.equal(f.c.getState().status, 'paused'); assert.equal(f.w.location.hash, '#/study/subject/detail/s');
+  f.w.location.hash = '#/study/course/detail/subject-course/c/6/s'; f.course('c'); await f.click('toggle'); await f.click('stop-learning'); assert.equal(f.w.location.hash, '#/study/subject/detail/s'); f.close();
 });
 
 test('真实adapter：状态/播放器加载超时必须退出学习页，面板问题可重试或跳过继续且不误报全完成', async () => {
@@ -108,19 +108,19 @@ test('真实adapter：状态/播放器加载超时必须退出学习页，面板
     if (mode === 'status') f.w.document.querySelector('dd span').textContent = '正在加载'; else f.w.document.querySelector('video').remove();
     await f.c.tick(); await f.elapse(31000); assert.equal(f.c.getState().status, 'paused'); assert.equal(f.w.location.hash, '#/study/subject/detail/s'); assert.equal(f.c.getState().problem.courseId, 'c');
     assert.match(f.root.querySelector('[data-problem]').textContent, /正式专区s.*课程c/su);
-    if (mode === 'status') { await f.click('retry'); assert.equal(f.c.getState().status, 'running'); assert.equal(f.c.getState().problem, null); await f.c.tick(); f.course('c'); await f.click('pause'); }
+    if (mode === 'status') { await f.click('retry'); assert.equal(f.c.getState().status, 'running'); assert.equal(f.c.getState().problem, null); await f.c.tick(); f.course('c'); await f.click('run-toggle'); }
     else { await f.click('skip'); assert.equal(f.c.getState().status, 'running'); await f.c.tick(); assert.match(f.w.location.hash, /subject-course\/d\/6\/s$/u); f.course('d'); await f.c.tick(); f.complete('doc'); await f.c.tick(); assert.equal(f.c.getState().status, 'paused'); assert.deepEqual(f.c.getState().tasks[0].skipped, ['c']); assert.match(f.c.getState().message, /跳过课程未完成/u); }
     const oldCourseRoute = '#/study/course/detail/subject-course/c/6/s';
     f.w.location.hash = oldCourseRoute; f.course('c', true); let pauses = 0; f.w.document.querySelector('video').pause = () => { pauses += 1; };
     assert.equal(f.c.getState().currentCourseId, mode === 'status' ? 'c' : 'd');
-    await f.click('pause');
+    f.panel.open(); await f.click('stop-learning');
     if (mode === 'status') { assert.equal(f.w.location.hash, '#/study/subject/detail/s'); assert.ok(pauses > 0, '当前课程的媒体应停止'); }
     else { assert.equal(f.w.location.hash, oldCourseRoute, '旧课程不是当前任务执行页，暂停不得跳走'); assert.equal(pauses, 0, '不得触碰旧课程媒体'); }
     f.close();
   }
 });
 
-test('真实adapter和收起面板：考试自动暂停后，标题暂停仅退出当前归属页，不触碰其他课程或专区媒体', async () => {
+test('考试自动暂停后，展开停止入口仅退出当前归属页，不触碰其他课程或专区媒体', async () => {
   for (const [courseId, subjectId, owned] of [['other', 's', false], ['c', 'other-subject', false], ['c', 's', true]]) {
     const f = setup(); await f.collect(); await f.c.start(); await f.c.tick(); f.course('c');
     const exam = f.w.document.querySelector('dl'); exam.dataset.sectionType = '9'; exam.querySelector('.qcontent').textContent = '考试课节';
@@ -130,12 +130,20 @@ test('真实adapter和收起面板：考试自动暂停后，标题暂停仅退�
     const route = `#/study/course/detail/subject-course/${courseId}/6/${subjectId}`;
     if (!owned) { f.w.location.hash = route; f.course(courseId); }
     const media = f.w.document.createElement('video'); let pauses = 0; media.pause = () => { pauses += 1; }; f.w.document.body.append(media);
-    assert.equal(f.root.querySelector('.body').hidden, true); assert.ok(f.root.querySelector('header [data-action="pause"]')); assert.equal(f.root.querySelector('[data-action="pause"]').disabled, false);
-    await f.click('pause');
+    assert.equal(f.root.querySelector('.body').hidden, true); assert.equal(f.root.querySelector('header [data-action="run-toggle"]').textContent, '继续');
+    await f.click('toggle'); assert.equal(f.root.querySelector('[data-action="stop-learning"]').disabled, false); await f.click('stop-learning');
     if (owned) { assert.equal(f.w.location.hash, '#/study/subject/detail/s'); assert.ok(pauses > 0, '当前考试页人工暂停应停止媒体并退出'); }
     else { assert.equal(f.w.location.hash, route); assert.equal(pauses, 0, '其他课程或专区的媒体不属于当前执行页'); }
     assert.equal(f.c.getState().status, 'paused'); f.close();
   }
+});
+
+test('收起面板可直接开始、暂停和继续，队列完成后按钮禁用', async () => {
+  const f=setup(); await f.collect(); const run=f.root.querySelector('header [data-action="run-toggle"]'); assert.ok(run);
+  assert.equal(f.root.querySelector('.body').hidden,true); assert.equal(run.textContent,'开始'); await f.click('run-toggle'); assert.equal(run.textContent,'暂停');
+  await f.c.tick(); f.course('c'); await f.c.tick(); await f.click('run-toggle'); assert.equal(run.textContent,'继续'); assert.equal(f.c.getState().status,'paused'); assert.equal(f.w.location.hash,'#/study/subject/detail/s');
+  await f.click('run-toggle'); assert.equal(run.textContent,'暂停'); await f.c.tick(); f.course('c'); f.complete('doc'); await f.c.tick(); await f.elapse(6000);
+  f.course('d'); f.complete('doc'); await f.c.tick(); assert.equal(f.c.getState().status,'complete'); assert.equal(run.textContent,'已完成'); assert.equal(run.disabled,true); assert.equal(f.root.querySelector('.body').hidden,true); f.close();
 });
 
 test('自动模式通过实际面板开启：考试暂存→下一门完成→详情保留原因，互斥错误不抢占', async () => {

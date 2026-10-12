@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         网大助手
 // @namespace    wangda-assistant
-// @version      0.1.0-beta.5
+// @version      0.1.0-beta.6
 // @description  手动勾选课程、管理多专区任务队列，按平台完成状态连续学习
 // @match        https://wangda.chinamobile.com/*
 // @run-at       document-idle
@@ -977,7 +977,7 @@ function createPanel(win, controller, version) {
   const headline = element('div', '', header); headline.className = 'headline';
   const title = element('div', '', headline); element('strong', '网大助手', title); element('small', ` ${version}`, title);
   const headerButtons = element('div', '', headline); headerButtons.className = 'row';
-  const busy = new Set(); const editors = new Set(); let adding = false; let latest = controller.getState();
+  const busy = new Set(); const editors = new Set(); let adding = false; let starting = false; let latest = controller.getState();
   const button = (action, text, parent, handler, edit = true) => {
     const node = element('button', text, parent); node.type = 'button'; node.dataset.action = action;
     if (edit) editors.add(node);
@@ -989,7 +989,8 @@ function createPanel(win, controller, version) {
     });
     return node;
   };
-  const pauseButton = button('pause', '暂停', headerButtons, () => controller.pause(), false);
+  const isRunning = state => ['running', 'preparing', 'waiting'].includes(state.status) || state.phase === 'resuming';
+  const runButton = button('run-toggle', '开始', headerButtons, () => isRunning(controller.getState()) ? controller.pause() : startQueue(), false);
   const toggle = button('toggle', '展开', headerButtons, () => setOpen(body.hidden), false); toggle.setAttribute('aria-expanded', 'false');
   const progress = element('div', '', header); progress.className = 'progress'; progress.setAttribute('role', 'status'); progress.setAttribute('aria-live', 'polite');
   const compact = element('div', '', header); compact.className = 'muted'; compact.style.cssText = 'white-space:pre-wrap;overflow-wrap:anywhere;max-height:4.5em;overflow:auto;';
@@ -1006,7 +1007,7 @@ function createPanel(win, controller, version) {
   const empty = element('p', '还没有任务，点击“添加专区”开始。', queueView); empty.className = 'muted';
   const taskList = element('div', '', queueView);
   const queueControls = element('div', '', queueView); queueControls.className = 'buttons';
-  const startButton = button('start', '开始 / 继续队列', queueControls, async () => { if (await saveWindow()) await controller.start(); }); startButton.className = 'primary';
+  const startButton = button('start', '开始 / 继续队列', queueControls, () => startQueue()); startButton.className = 'primary';
   const addView = element('div', '', body); addView.dataset.view = 'add';
   element('h2', '添加专区', addView);
   const searchBox = element('div', '', addView);
@@ -1044,6 +1045,7 @@ function createPanel(win, controller, version) {
   const resumeOnReload = automaticInput('resumeOnReload', '刷新或重新打开后恢复已开始的队列');
   element('p', '开启后，到学习时段自动继续；主动暂停会取消自动执行。需保持浏览器和网大页面打开。', autoBox).className = 'muted';
   const utility = element('div', '', body); utility.className = 'buttons';
+  button('stop-learning', '停止学习并退出', utility, () => controller.pause(), false);
   button('diagnose', '页面诊断', utility, () => { diagnostic.textContent = JSON.stringify(controller.diagnose(), null, 2); }, false);
   const diagnostic = element('pre', '', body);
   const taskNodes = new Map(); let candidateSignature = ''; let draftSubjectId = null;
@@ -1054,6 +1056,12 @@ function createPanel(win, controller, version) {
     const next = { start: fields.start.value.trim(), end: fields.end.value.trim() };
     if (JSON.stringify(next) !== JSON.stringify(controller.getState().window) && !await controller.setWindow(next)) return false;
     dirty.clear(); return true;
+  };
+  const startQueue = async () => {
+    if (starting) return;
+    starting = true; render(controller.getState());
+    try { if (await saveWindow()) await controller.start(); }
+    finally { starting = false; render(controller.getState()); }
   };
   function createCourseList(parent, taskId = null) {
     const controls = element('div', '', parent); controls.className = 'buttons';
@@ -1120,7 +1128,7 @@ function createPanel(win, controller, version) {
   }
   function render(state) {
     latest = state;
-    const running = ['running', 'preparing', 'waiting'].includes(state.status) || state.phase === 'resuming';
+    const running = isRunning(state);
     const active = state.tasks.find(item => item.id === state.activeTaskId); const total = active ? counts(active) : { done: 0, selected: 0 };
     const labels = { paused: '已暂停', preparing: '正在准备', running: '学习中', complete: '已完成', retrying: '正在重试', waiting: '等待学习时段', offline: '等待网络', resuming: '正在恢复' };
     const all = state.tasks.reduce((sum, task) => { const c = counts(task); return { done: sum.done + c.done, selected: sum.selected + c.selected, deferred: sum.deferred + c.deferred }; }, { done: 0, selected: 0, deferred: 0 });
@@ -1144,8 +1152,12 @@ function createPanel(win, controller, version) {
     automatic.checked = state.automation?.enabled === true; resumeOnReload.checked = state.automation?.resumeOnReload === true;
     resumeOnReload.disabled ||= !automatic.checked;
     for (const control of problemActions.querySelectorAll('button')) control.disabled ||= adding;
-    startButton.disabled = running || state.unavailable || adding || Boolean(state.draft) || !state.tasks.length;
-    pauseButton.disabled = false; toggle.disabled = false;
+    const hasPending = state.tasks.some(item => item.subject && eligible(item).some(course => !item.done.includes(course.id) && !item.skipped.includes(course.id) && !item.deferred?.some(entry => entry.courseId === course.id)));
+    const cannotStart = starting || state.unavailable || adding || Boolean(state.draft) || !hasPending;
+    const hasStarted = Boolean(state.currentCourseId) || state.tasks.some(item => item.current || item.done.length || item.skipped.length || item.deferred?.length);
+    startButton.disabled = running || cannotStart;
+    runButton.textContent = running ? '暂停' : state.status === 'complete' ? '已完成' : hasStarted ? '继续' : '开始';
+    runButton.disabled = starting || (!running && cannotStart); toggle.disabled = false;
     for (const control of busy) control.disabled = true;
   }
   const unsubscribe = controller.subscribe(render);
@@ -1158,7 +1170,7 @@ function createPanel(win, controller, version) {
 
 
 
-const wdMainVersion = "0.1.0-beta.5";
+const wdMainVersion = "0.1.0-beta.6";
 
 function wdMainBootstrap(win) {
   if (win.location.protocol !== 'https:' || win.location.hostname !== 'wangda.chinamobile.com' || win.top !== win.self) return;

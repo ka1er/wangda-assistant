@@ -36,13 +36,13 @@ test('首页仅队列，添加搜索候选和草稿分阶段展示，加入后�
   await f.click('add-draft'); assert.equal(f.root.querySelector('[data-view="queue"]').hidden, false); assert.equal(f.root.querySelector('[data-view="add"]').hidden, true); assert.match(f.root.textContent, /正式专区标题/u); f.close();
 });
 
-test('标题收起时仍显示状态、专区位置、本任务完成数且暂停始终可点', async () => {
+test('标题收起时显示进度，运行可暂停，暂停后可继续', async () => {
   const t = task(); t.done = ['a']; const f = fixture({ tasks: [t, { ...task('t2'), subject: { ...task().subject, id: 's2' } }], activeTaskId: 't', status: 'running', currentCourseId: 'a', currentSectionTitle: '视频课节', message: '执行中' });
   const body = f.root.querySelector('.body'); assert.equal(body.hidden, true);
   const header = f.root.querySelector('header'); assert.match(header.textContent, /学习中/u); assert.match(header.textContent, /专区 1\/2/u); assert.match(header.textContent, /本任务完成 1\/1 门/u);
-  assert.equal(header.querySelector('[data-action="pause"]').disabled, false); await f.click('pause');
+  const run = header.querySelector('[data-action="run-toggle"]'); assert.ok(run); assert.equal(run.disabled, false); assert.equal(run.textContent, '暂停'); await f.click('run-toggle');
   await f.click('toggle'); assert.match(body.textContent, /当前课节：视频课节/u); assert.match(body.textContent, /当前课程：课程a/u);
-  await f.click('toggle'); f.emit({ status: 'paused' }); assert.equal(body.hidden, true); await f.click('pause'); assert.equal(f.calls.filter(call => call[0] === 'pause').length, 2); f.close();
+  await f.click('toggle'); f.emit({ status: 'paused' }); assert.equal(body.hidden, true); assert.equal(run.textContent, '继续'); await f.click('run-toggle'); assert.equal(f.calls.filter(call => call[0] === 'pause').length, 1); assert.deepEqual(f.calls.at(-1), ['start']); f.close();
 });
 
 test('任务详情支持勾选、更新和移出，运行时只禁编辑，完成课程可折叠且实际done优先', async () => {
@@ -105,5 +105,34 @@ test('自动设置保存、批量选择、待处理原因和收起总进度都�
   await f.click('select-required-t'); assert.deepEqual(f.calls.at(-1),['selectCourses','t','required']);
   f.emit({status:'running',phase:'retrying',message:'正在等待重试 1/3。'}); await f.click('toggle');
   assert.match(f.root.querySelector('header').textContent,/正在重试.*总完成 0\/1/su); assert.match(f.root.querySelector('header').textContent,/课程a.*重试 1\/3/su);
-  assert.equal(automatic.disabled,true); f.emit({status:'waiting',phase:'waiting'}); assert.equal(f.root.querySelector('[data-action="start"]').disabled,true); assert.equal(f.root.querySelector('[data-action="pause"]').disabled,false); f.close();
+  assert.equal(automatic.disabled,true); f.emit({status:'waiting',phase:'waiting'}); assert.equal(f.root.querySelector('[data-action="start"]').disabled,true); assert.equal(f.root.querySelector('[data-action="run-toggle"]').disabled,false); f.close();
+});
+
+test('收起主按钮开始前保存时段，准备、等待、恢复时均可暂停', async () => {
+  const f = fixture({ tasks: [task()] }); const run = f.root.querySelector('[data-action="run-toggle"]');
+  assert.ok(run); assert.equal(run.textContent, '开始'); assert.equal(f.root.querySelector('.body').hidden, true);
+  const input = f.root.querySelector('[name="start"]'); input.value = '10:30'; input.dispatchEvent(new f.dom.window.Event('input'));
+  await f.click('run-toggle'); assert.deepEqual(f.calls.slice(-2), [['setWindow', { start: '10:30', end: '24:00' }], ['start']]);
+  for (const state of [{status:'preparing'}, {status:'waiting'}, {status:'paused',phase:'resuming'}, {status:'running',phase:'offline'}, {status:'running',phase:'retrying'}]) {
+    f.emit({phase:null,...state}); assert.equal(run.textContent,'暂停'); assert.equal(run.disabled,false); await f.click('run-toggle'); assert.deepEqual(f.calls.at(-1),['pause']);
+  }
+  f.close();
+});
+
+test('空队列、未确认添加、无待学或不可用时不能从标题启动', async () => {
+  const f = fixture(); const run = f.root.querySelector('[data-action="run-toggle"]'); assert.ok(run); assert.equal(run.disabled,true);
+  f.emit({tasks:[task()]}); assert.equal(run.disabled,false); await f.click('add'); assert.equal(run.disabled,true); await f.click('run-toggle'); assert.equal(f.calls.some(c=>c[0]==='start'),false);
+  await f.click('back'); f.emit({unavailable:true}); assert.equal(run.disabled,true);
+  f.emit({unavailable:false,tasks:[{...task(),done:['a']}],status:'complete'}); assert.equal(run.textContent,'已完成'); assert.equal(run.disabled,true);
+  f.emit({tasks:[{...task(),skipped:['a']}],status:'paused'}); assert.equal(run.disabled,true);
+  f.emit({tasks:[{...task(),deferred:[{courseId:'a',reason:'人工处理'}]}]}); assert.equal(run.disabled,true); f.close();
+});
+
+test('标题和展开开始按钮共用启动锁，连续点击只启动一次', async () => {
+  const f = fixture({tasks:[task()]}); let release; f.panel.destroy();
+  const controller = {getState:()=>structuredClone(f.state),subscribe:()=>()=>{},start:()=>new Promise(resolve=>{ f.calls.push(['start']); release=resolve; })};
+  const panel = createPanel(f.dom.window,controller,'test'); const root=f.dom.window.document.getElementById('wangda-assistant').shadowRoot;
+  const run=root.querySelector('[data-action="run-toggle"]'); assert.ok(run); run.click(); for(let i=0;i<10;i++)await Promise.resolve();
+  assert.equal(run.disabled,true); assert.equal(root.querySelector('[data-action="start"]').disabled,true); root.querySelector('[data-action="start"]').click(); run.click();
+  assert.equal(f.calls.filter(c=>c[0]==='start').length,1); release(true); for(let i=0;i<30;i++)await Promise.resolve(); assert.equal(run.disabled,false); panel.destroy(); f.close();
 });
