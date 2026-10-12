@@ -300,3 +300,108 @@ test('首页登录与未知页快照字段完整', () => {
     assert.equal(JSON.stringify(page).includes('敏感业务'), false);
   }
 });
+
+const relearnPrompt = (kind) => `您已经很久没有学习该${kind === 'subject' ? '专题' : '课程'}了，是否重新学习？`;
+const archivedPage = (kind, options = {}) => `<div class="course-middle-banner banner"></div><div class="center"><section class="section"><div class="but-footer"><div class="h3 tips-m-l">${relearnPrompt(kind)}${options.updated ? `<span class="update-content-tips">（${kind === 'subject' ? '专题' : '课程'}内容可能更新，如有学习要求，建议重新学习）</span>` : ''}</div><div id="D42close" class="btn btn1">取消</div><div id="D42again" class="btn">重新学习</div></div></section></div>`;
+
+test('归档专题中间页严格识别路由及SID并给出人工处理提示', () => {
+  for (const clickType of [1, 9]) {
+    const route = `#/study/subject-middle/synthetic-subject/${clickType}`;
+    const w = dom(archivedPage('subject', { updated: true }), route).window;
+    const page = createAdapter(w).read();
+    assert.equal(page.kind, 'subject-relearn');
+    assert.equal(page.route, route);
+    assert.equal(page.subjectId, 'synthetic-subject');
+    assert.equal(page.courseId, null);
+    assert.deepEqual(page.relearn, { kind: 'subject', message: relearnPrompt('subject'), manualRequired: true, reason: '重新学习会调用平台归档恢复接口并打开新窗口，请先在平台核对记录后人工处理。' });
+    assert.deepEqual(page.courses, []);
+    assert.deepEqual(page.sections, []);
+    w.close();
+  }
+});
+
+test('归档课程中间页只识别源码使用的1或2且不伪造专题上下文', () => {
+  for (const type of [1, 2]) {
+    const route = `#/study/course-middle/synthetic-course/${type}`;
+    const w = dom(archivedPage('course'), route).window;
+    const page = createAdapter(w).read();
+    assert.equal(page.kind, 'course-relearn');
+    assert.equal(page.courseId, 'synthetic-course');
+    assert.equal(page.subjectId, null);
+    assert.equal(page.route, route);
+    assert.equal(page.relearn.kind, 'course');
+    assert.equal(page.relearn.message, relearnPrompt('course'));
+    assert.equal(page.relearn.manualRequired, true);
+    w.close();
+  }
+});
+
+test('归档页未加载提示时仍按路由提示人工核对，不把任意正文读为提示', () => {
+  const route = '#/study/subject-middle/synthetic-subject/9';
+  const w = dom('<p>业务内容和账号信息</p>', route).window;
+  const page = createAdapter(w).read();
+  assert.equal(page.kind, 'subject-relearn');
+  assert.equal(page.relearn.message, '');
+  assert.equal(page.relearn.manualRequired, true);
+  assert.equal(JSON.stringify(page).includes('业务内容'), false);
+  w.close();
+});
+
+test('未知归档路由与缺少SID的中间页不猜测标识', () => {
+  for (const route of ['#/study/subject-middle', '#/study/subject-middle/synthetic-subject/6', '#/study/subject-middle/synthetic-subject/09', '#/study/course-middle/synthetic-course/9', '#/study/subject-middle/../../other/9', '#/study/subject-middle/synthetic-subject/9?token=secret', '#/study/subject-middle/synthetic-subject/9/extra']) {
+    const w = dom(archivedPage('subject'), route).window;
+    const page = createAdapter(w).read();
+    assert.equal(page.kind, 'unknown');
+    assert.equal(page.subjectId, null);
+    assert.equal(page.courseId, null);
+    assert.equal(page.relearn, null);
+    w.close();
+  }
+});
+
+test('目标页可见对话框中的准确重学提示只报告人工处理，不点击按钮或调用confirm', () => {
+  const w = dom('<div role="dialog"><p>该专题已完成，是否重新学习？</p><button>确定</button></div>', subjectRoute).window;
+  let clicks = 0;
+  let confirms = 0;
+  w.document.querySelector('button').addEventListener('click', () => { clicks += 1; });
+  w.confirm = () => { confirms += 1; return true; };
+  const page = createAdapter(w).read();
+  assert.equal(page.kind, 'subject');
+  assert.equal(page.subjectId, sid);
+  assert.ok(page.relearn);
+  assert.equal(page.relearn.message, '该专题已完成，是否重新学习？');
+  assert.equal(page.relearn.manualRequired, true);
+  assert.equal(clicks, 0);
+  assert.equal(confirms, 0);
+  w.close();
+});
+
+test('普通正文、隐藏对话框、非目标页面及未知重学文案不作为确认提示', () => {
+  const known = '该专题已完成，是否重新学习？';
+  for (const [html, route] of [
+    [`<p>${known}</p>`, subjectRoute],
+    [`<div role="dialog" hidden><p>${known}</p></div>`, subjectRoute],
+    [`<div style="display:none"><div role="dialog"><p>${known}</p></div></div>`, subjectRoute],
+    [`<div role="dialog" style="visibility:hidden"><p>${known}</p></div>`, subjectRoute],
+    [`<div role="dialog" aria-hidden="true"><p>${known}</p></div>`, subjectRoute],
+    [`<dialog><p>${known}</p></dialog>`, subjectRoute],
+    [`<div role="dialog"><p>${known}这将清空记录</p></div>`, subjectRoute],
+    [`<div role="dialog"><p>该课程已完成，是否重新学习？</p></div>`, subjectRoute],
+    [`<div role="dialog"><p>${known}</p></div>`, '#/search'],
+  ]) {
+    const w = dom(html, route).window;
+    assert.equal(createAdapter(w).read().relearn, null);
+    w.close();
+  }
+});
+
+test('归档中间页的隐藏或不准确文案不会进入快照', () => {
+  const route = '#/study/subject-middle/synthetic-subject/9';
+  for (const html of [archivedPage('subject').replace('class="but-footer"', 'class="but-footer" hidden'), archivedPage('subject').replace(relearnPrompt('subject'), `${relearnPrompt('subject')}未知业务要求`)]) {
+    const w = dom(html, route).window;
+    const page = createAdapter(w).read();
+    assert.ok(page.relearn);
+    assert.equal(page.relearn.message, '');
+    w.close();
+  }
+});

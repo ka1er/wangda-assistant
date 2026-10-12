@@ -49,6 +49,7 @@ export function createController(options) {
   const seenPlaying = new Set();
   const listeners = new Set();
   const copy = value => JSON.parse(JSON.stringify(value));
+  const isDone = (item, id) => Boolean(item?.done?.includes(id) && !item.recheck?.includes(id));
   const getState = () => ({ status, phase: restorePending ? 'resuming' : recovery?.network ? 'offline' : recovery ? 'retrying' : status, message, unavailable: blocked, window: copy(record?.window || defaultWindow), automation: copy(record?.automation || defaultAutomation), tasks: copy(record?.tasks || []), activeTaskId: record?.activeTaskId || null, currentCourseId: task?.current || null, currentSectionTitle, candidates: copy(candidates), draft: copy(draft), problem: copy(problem) });
   const emit = () => { const state = getState(); for (const listener of listeners) listener(state); };
   const tell = text => { message = text; emit(); return false; };
@@ -164,16 +165,17 @@ export function createController(options) {
   };
   const validPage = (page, subject = null) => page.kind === 'subject' && typeof page.subjectId === 'string' && page.title?.trim() && page.route === `#/study/subject/detail/${page.subjectId}` && page.courses?.length && (!subject || (page.subjectId === subject.id && normalizeTitle(page.title) === normalizeTitle(subject.title)));
   const collectPage = (page, refreshId = null) => {
+    if (page.relearn?.manualRequired) return tell(`遇到“重新学习”提示。${page.relearn.reason} 处理后请重新读取专区。`);
     const existing = refreshId ? record?.tasks.find(item => item.id === refreshId) : null;
     if (!validPage(page, existing?.subject)) return tell('请进入对应专题课程列表，等待标题和课程加载完成后再读取。');
     if (refreshId) {
       if (!existing) return false;
-      existing.courses = mergeCourses(existing.courses, page.courses);
+      existing.courses = mergeCourses(existing.courses, page.courses, existing.selectionMode);
       if (!persist()) return false;
       message = '课程清单已刷新，勾选和学习记录已保留。' + (nextEntry() ? pendingNotice : ''); emit(); return true;
     }
     candidates = [];
-    draft = { target: target || page.title, subject: { id: page.subjectId, title: page.title, route: page.route }, courses: mergeCourses([], page.courses) };
+    draft = { target: target || page.title, selectionMode: 'all-pending', subject: { id: page.subjectId, title: page.title, route: page.route }, courses: mergeCourses([], page.courses) };
     message = '已读取待添加清单，请核对课程勾选后添加。'; emit(); return true;
   };
   const collectDraft = async () => edit(() => { try { return collectPage(adapter.read()); } catch { return tell('当前页面读取失败，请稍后重试。'); } });
@@ -183,9 +185,9 @@ export function createController(options) {
     course.selected = Boolean(selected); emit(); return true;
   };
   const selectCourses = (taskId, mode) => {
-    if (!['unfinished', 'required', 'none'].includes(mode) || !editable()) return false;
+    if (!['unfinished', 'required', 'none', 'completed'].includes(mode) || !editable()) return false;
     const apply = (courses, item = null) => {
-      for (const course of courses) course.selected = mode !== 'none' && ['not-started', 'learning'].includes(course.status) && !item?.done.includes(course.id) && (mode !== 'required' || course.required) && (item?.scope !== 'required' || course.required);
+      for (const course of courses) course.selected = Boolean((mode === 'completed' ? course.selected || course.status === 'completed' || item?.done.includes(course.id) : mode !== 'none' && ['not-started', 'learning'].includes(course.status) && !isDone(item, course.id)) && (mode !== 'required' || course.required) && (item?.scope !== 'required' || course.required));
       emit(); return true;
     };
     if (taskId === null) return draft ? apply(draft.courses) : false;
@@ -202,6 +204,28 @@ export function createController(options) {
   const setSelection = async (taskId, id, selected) => edit(() => {
     const item = record?.tasks.find(item => item.id === taskId)?.courses.find(course => course.id === id); if (!item) return false;
     item.selected = Boolean(selected); return persist();
+  });
+  const setTaskMode = async (taskId, mode) => {
+    if (!['all-pending', 'specific'].includes(mode) || !editable()) return false;
+    const apply = item => {
+      if (!item) return false;
+      if (item.selectionMode === mode) return true;
+      item.selectionMode = mode;
+      for (const course of item.courses) course.selected = mode === 'all-pending' && ['not-started', 'learning'].includes(course.status) && !isDone(item, course.id) && (item.scope !== 'required' || course.required);
+      return true;
+    };
+    if (taskId === null) { const changed = apply(draft); if (changed) emit(); return changed; }
+    return edit(() => { const item = record?.tasks.find(item => item.id === taskId); return apply(item) && persist(); });
+  };
+  const recheckCompleted = async taskId => edit(() => {
+    const item = record?.tasks.find(item => item.id === taskId);
+    if (!item) return false;
+    const ids = item.courses.filter(course => course.selected && (item.scope === 'all' || course.required) && (item.done.includes(course.id) || course.status === 'completed')).map(course => course.id);
+    if (!ids.length) return tell('请先勾选需要复查的已完成课程。');
+    item.recheck = [...new Set([...(item.recheck || []), ...ids])];
+    item.skipped = item.skipped.filter(id => !ids.includes(id)); item.deferred = (item.deferred || []).filter(entry => !ids.includes(entry.courseId));
+    if (!persist()) return false;
+    message = `已安排 ${ids.length} 门课程复查，请点击开始；将核对课节状态，只学习未完成内容。`; emit(); return true;
   });
   const removeTask = async taskId => edit(() => {
     if (!record?.tasks.some(item => item.id === taskId)) return false;
@@ -261,17 +285,21 @@ export function createController(options) {
   const queue = (item = task) => item ? item.courses.filter(course => course.selected && (item.scope === 'all' || course.required)) : [];
   const nextEntry = () => {
     for (const item of record?.tasks || []) {
-      const course = queue(item).find(course => !item.done.includes(course.id) && !item.skipped.includes(course.id) && !item.deferred?.some(entry => entry.courseId === course.id));
+      const course = queue(item).find(course => !isDone(item, course.id) && !item.skipped.includes(course.id) && !item.deferred?.some(entry => entry.courseId === course.id));
       if (course) return { item, course };
     }
     return null;
   };
   const matchesCourse = (page, course) => page.kind === 'course' && page.courseId === course.id && page.subjectId === task.subject.id && page.route === course.route;
+  const pauseForRelearn = (page, current) => {
+    if (!page.relearn?.manualRequired || !(matchesCourse(page, current) || (page.kind === 'course-relearn' && page.courseId === current.id) || (['subject', 'subject-relearn'].includes(page.kind) && page.subjectId === task.subject.id))) return false;
+    stop(`遇到“重新学习”提示。${page.relearn.reason} 处理后请手动继续队列。`); notify(message); return true;
+  };
   const start = async (preferred = null) => {
     if (!editable() || !record || !record.tasks.length) return tell('请先添加专题任务。');
     if (!isWithinWindow(now(), record.window) && !record.automation.enabled) return tell('当前不在允许的北京时间学习时段内。');
     const preferredTask = preferred && record.tasks.find(item => item.id === preferred.taskId);
-    const preferredCourse = queue(preferredTask).find(course => course.id === preferred.courseId && course.selected && !preferredTask.done.includes(course.id) && !preferredTask.skipped.includes(course.id) && !preferredTask.deferred?.some(entry => entry.courseId === course.id));
+    const preferredCourse = queue(preferredTask).find(course => course.id === preferred.courseId && course.selected && !isDone(preferredTask, course.id) && !preferredTask.skipped.includes(course.id) && !preferredTask.deferred?.some(entry => entry.courseId === course.id));
     const entry = preferredCourse ? { item: preferredTask, course: preferredCourse } : nextEntry();
     if (!entry || !entry.item.subject) return tell(record.tasks.some(item => item.deferred?.length) ? '仍有待处理课程，请在详情中重试。' : record.tasks.some(item => item.skipped.length) ? '仍有跳过课程未完成，请重试。' : '请勾选尚未核对的课程。');
     const token = generation;
@@ -358,7 +386,8 @@ export function createController(options) {
     const changed = await edit(() => {
       const item = record?.tasks.find(item => item.id === taskId);
       if (!item?.courses.some(course => course.id === courseId)) return false;
-      item.skipped = item.skipped.filter(id => id !== courseId); item.done = item.done.filter(id => id !== courseId);
+      item.skipped = item.skipped.filter(id => id !== courseId);
+      if (!item.recheck?.includes(courseId)) item.done = item.done.filter(id => id !== courseId);
       item.deferred = (item.deferred || []).filter(entry => entry.courseId !== courseId);
       item.courses.find(course => course.id === courseId).selected = true;
       record.activeTaskId = item.id; item.current = courseId; problem = null; return persist();
@@ -371,7 +400,8 @@ export function createController(options) {
       const item = record?.tasks.find(item => item.id === problem.taskId);
       const course = item?.courses.find(course => course.id === problem.courseId); if (!course) return false;
       if (!item.skipped.includes(problem.courseId)) item.skipped.push(problem.courseId);
-      item.done = item.done.filter(id => id !== problem.courseId); problem = null;
+      if (!item.recheck?.includes(problem.courseId)) item.done = item.done.filter(id => id !== problem.courseId);
+      problem = null;
       if (!persist()) return false;
       try {
         const page = adapter.read();
@@ -418,6 +448,9 @@ export function createController(options) {
         return;
       }
       if (status === 'preparing') {
+        if (preparing.stage === 'subject' && page.relearn?.manualRequired && page.subjectId === preparing.candidate.id && ['subject', 'subject-relearn'].includes(page.kind)) {
+          stop(`遇到“重新学习”提示。${page.relearn.reason} 处理后请重新读取专区。`); notify(message); return;
+        }
         if (milliseconds() - preparing.since >= 30000) { stop(subjectTitleIssue(page) || '搜索或专题加载超时，请手动打开专题后读取。'); return; }
         if (preparing.stage === 'search-page' && page.kind === 'search') {
           if (adapter.searchKeyword(target)) preparing = { stage: 'results', since: milliseconds() };
@@ -436,6 +469,7 @@ export function createController(options) {
       }
       const current = queue().find(course => course.id === task.current);
       if (!current) { stop('当前课程不在已选清单中。', true); return; }
+      if (pauseForRelearn(page, current)) return;
       if (recovery) {
         if (page.route !== recovery.before && page.route !== task.subject.route && !matchesCourse(page, current)) { stop('页面已离开目标课程，请确认后重新开始。'); return; }
         if (!recovery.network && milliseconds() < recovery.until) return;
@@ -459,15 +493,15 @@ export function createController(options) {
       if (!matchesCourse(page, current)) {
         const entry = nextEntry();
         const next = entry?.course;
-        if (task.done.includes(current.id) && next && page.subjectId === entry.item.subject?.id && page.courseId === next.id && page.route === next.route) { nextCourse(page); return; }
+        if (isDone(task, current.id) && next && page.subjectId === entry.item.subject?.id && page.courseId === next.id && page.route === next.route) { nextCourse(page); return; }
         const nativeNext = task.courses[task.courses.findIndex(course => course.id === current.id) + 1];
-        if (task.done.includes(current.id) && grace?.key === `course:${current.id}` && next && nativeNext && matchesCourse(page, nativeNext)) {
+        if (isDone(task, current.id) && grace?.key === `course:${current.id}` && next && nativeNext && matchesCourse(page, nativeNext)) {
           // The site advanced within the just-completed course's subject before applying the new queue order.
           adapter.pauseMedia(); nextCourse(page); return;
         }
         stop('页面已离开目标课程，请确认后重新开始。'); return;
       }
-      if (task.done.includes(current.id)) {
+      if (isDone(task, current.id)) {
         if (!grace || milliseconds() - grace.since >= 6000) nextCourse(page);
         return;
       }
@@ -482,7 +516,8 @@ export function createController(options) {
       if (decision.type === 'manual') { if (record.automation.enabled) deferCurrent('此课节需要人工处理，请完成后重试。'); else { stop('此课节需要人工处理，请在当前页面完成后再继续。'); notify(message); } return; }
       if (page.activeSectionId && !active) { waitFor('focus', '当前课节无法确认'); return; }
       if (decision.type === 'course-complete') {
-        task.done.push(current.id);
+        if (!task.done.includes(current.id)) task.done.push(current.id);
+        task.recheck = (task.recheck || []).filter(id => id !== current.id);
         if (!persist()) return;
         if (!nextEntry()) { nextCourse(page); return; }
         grace = { key: `course:${current.id}`, since: milliseconds() }; loading = null; return;
@@ -519,6 +554,7 @@ export function createController(options) {
                 if (mediaPending?.key === key) mediaPending = null;
                 if (!isWithinWindow(now(), record.window)) { waitWindow(); return; }
                 const latest = adapter.read();
+                if (pauseForRelearn(latest, current)) return;
                 if (!matchesCourse(latest, current) || latest.activeSectionId !== active.id) return;
                 if (success) seenPlaying.add(key);
                 if (!success) { if (record.automation.enabled) recover('浏览器未能自动播放。'); else { stop('浏览器未能自动播放，请在当前页手动播放后再继续。'); notify(message); } }
@@ -530,6 +566,7 @@ export function createController(options) {
                 if (mediaPending?.key === key) mediaPending = null;
                 if (!isWithinWindow(now(), record.window)) { waitWindow(); return; }
                 const latest = adapter.read();
+                if (pauseForRelearn(latest, current)) return;
                 if (!matchesCourse(latest, current) || latest.activeSectionId !== active.id) return;
                 if (record.automation.enabled) recover('播放失败。'); else { stop('播放失败，请手动播放后再继续。'); notify(message); }
               } catch { if (generation === token && status === 'running') stop('页面读取或操作异常，已暂停并退出学习页，请人工确认。', true); }
@@ -544,7 +581,7 @@ export function createController(options) {
   if (!blocked && record?.automation.enabled && record.automation.resumeOnReload && record.runRequested) { restorePending = true; message = '正在准备恢复上次开始的队列。'; watch(); }
   return {
     getState, subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
-    search, chooseCandidate, collectDraft, draftSetSelection, selectCourses, addDraft, discardDraft, setSelection, refreshTask, removeTask, moveTask, setWindow, setAutomation,
+    search, chooseCandidate, collectDraft, draftSetSelection, selectCourses, addDraft, discardDraft, setSelection, setTaskMode, recheckCompleted, refreshTask, removeTask, moveTask, setWindow, setAutomation,
     start, pause, retry, skipCurrent, tick,
     diagnose() {
       const diagnostic = adapter.diagnose();

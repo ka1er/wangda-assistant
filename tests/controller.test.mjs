@@ -26,6 +26,65 @@ export function course(sections, extra = {}) { return { kind: 'course', subjectI
 export function section(id = 'v', type = 5, status = 'learning', active = true) { return { id, courseId: 'c', type, status, active, required: true }; }
 export async function elapse(f, duration) { for (let remaining = duration; remaining > 0; remaining -= 1000) { f.advance(Math.min(remaining, 1000)); await f.c.tick(); } }
 
+test('指定范围先清空预选，加入刷新新增课程不勾选，范围与原勾选恢复', async () => {
+  const f=fixture(); await f.c.collectDraft(); assert.equal(typeof f.c.setTaskMode,'function');
+  assert.equal(await f.c.setTaskMode(null,'specific'),true); assert.equal(f.c.getState().draft.selectionMode,'specific'); assert.equal(f.c.getState().draft.courses[0].selected,false);
+  assert.equal(await f.c.setTaskMode(null,'all-pending'),true); assert.equal(await f.c.setTaskMode(null,'specific'),true);
+  f.c.draftSetSelection('c',true); await f.c.addDraft(); const id=f.c.getState().tasks[0].id;
+  await f.c.refreshTask(id); f.page({courses:[...f.page().courses,{id:'d',title:'新增课程',required:true,status:'not-started',route:'#/study/course/detail/subject-course/d/6/s'}]}); await f.c.tick();
+  assert.deepEqual(f.c.getState().tasks[0].courses.map(c=>c.selected),[true,false]); const restored=fixture(f.shared); assert.equal(restored.c.getState().tasks[0].selectionMode,'specific'); restored.c.destroy();
+  assert.equal(await f.c.setTaskMode(id,'all-pending'),true); assert.deepEqual(f.c.getState().tasks[0].courses.map(c=>c.selected),[false,true]); f.c.destroy();
+});
+
+test('草稿指定课程切回全部待学可恢复预选，不依赖尚未建立的完成记录', async () => {
+  const f=fixture();f.page({courses:[{...f.page().courses[0],status:'learning'}]});await f.c.collectDraft();await f.c.setTaskMode(null,'specific');assert.equal(f.c.getState().draft.courses[0].selected,false);
+  assert.equal(await f.c.setTaskMode(null,'all-pending'),true);assert.equal(f.c.getState().draft.courses[0].selected,true);f.c.destroy();
+});
+
+test('草稿勾选已完成时未知和未选待学课程保持布尔false且可正常加入', async () => {
+  const f=fixture();f.page({courses:[...f.page().courses,{id:'d',title:'未知课程',required:true,status:'unknown',route:'#/study/course/detail/subject-course/d/6/s'}]});await f.c.collectDraft();await f.c.setTaskMode(null,'specific');await f.c.selectCourses(null,'completed');
+  assert.deepEqual(f.c.getState().draft.courses.map(c=>c.selected),[true,false]);assert.equal(await f.c.addDraft(),true);assert.equal(f.c.getState().unavailable,false);f.c.destroy();
+});
+
+test('复查保留done，恢复后重新读取课节，有新增课节则等待完成且不重复累积done', async () => {
+  const f=await ready(fixture()); await f.c.start(); await f.c.tick(); f.page(course([section('doc',1,'completed')])); await f.c.tick();
+  const id=f.c.getState().tasks[0].id; assert.equal(f.c.getState().status,'complete'); assert.equal(typeof f.c.recheckCompleted,'function');
+  assert.equal(await f.c.recheckCompleted(id),true); assert.deepEqual(f.c.getState().tasks[0].done,['c']); assert.deepEqual(f.c.getState().tasks[0].recheck,['c']); assert.equal(f.c.getState().status,'paused');
+  const restored=fixture(f.shared); assert.deepEqual(restored.c.getState().tasks[0].recheck,['c']); restored.c.destroy();
+  await f.c.start(); f.page(course([section('new-doc',1,'learning')])); await f.c.tick(); assert.equal(f.c.getState().status,'running'); assert.deepEqual(f.c.getState().tasks[0].recheck,['c']);
+  f.page(course([section('new-doc',1,'completed')])); await f.c.tick(); assert.equal(f.c.getState().status,'complete'); assert.deepEqual(f.c.getState().tasks[0].done,['c']); assert.deepEqual(f.c.getState().tasks[0].recheck,[]); f.c.destroy();
+});
+
+test('复查遇人工环节可暂存，完成历史保留但仍属于待处理，运行期间不能修改范围', async () => {
+  const f=await ready(fixture()); await f.c.start(); await f.c.tick(); f.page(course([section('doc',1,'completed')])); await f.c.tick(); const id=f.c.getState().tasks[0].id;
+  assert.equal(typeof f.c.recheckCompleted,'function'); await f.c.recheckCompleted(id); await f.c.setAutomation({enabled:true,resumeOnReload:false}); await f.c.start();
+  assert.equal(await f.c.setTaskMode(id,'specific'),false); assert.equal(await f.c.recheckCompleted(id),false);
+  f.page(course([section('exam',9,'learning')])); await f.c.tick(); assert.equal(f.c.getState().unavailable,false); assert.deepEqual(f.c.getState().tasks[0].done,['c']); assert.equal(f.c.getState().tasks[0].deferred[0].courseId,'c'); assert.match(f.c.getState().message,/待处理/u); f.c.destroy();
+});
+
+test('复查遇人工环节手动跳过及重试均保留原完成历史', async () => {
+  const f=await ready(fixture());await f.c.start();await f.c.tick();f.page(course([section('doc',1,'completed')]));await f.c.tick();const id=f.c.getState().tasks[0].id;
+  await f.c.recheckCompleted(id);await f.c.start();f.page(course([section('exam',9)]));await f.c.tick();assert.equal(f.c.getState().status,'paused');await f.c.skipCurrent();
+  assert.deepEqual(f.c.getState().tasks[0].done,['c']);assert.deepEqual(f.c.getState().tasks[0].skipped,['c']);assert.deepEqual(f.c.getState().tasks[0].recheck,['c']);
+  await f.c.retry(id,'c');assert.deepEqual(f.c.getState().tasks[0].done,['c']);assert.deepEqual(f.c.getState().tasks[0].recheck,['c']);f.c.destroy();
+});
+
+test('运行中遇目标课程重学页面或确认框暂停并取消自动恢复', async () => {
+  for(const kind of ['course','course-relearn']){
+    const f=await ready(fixture());await f.c.setAutomation({enabled:true,resumeOnReload:true});await f.c.start();await f.c.tick();
+    f.page({kind,courseId:'c',subjectId:kind==='course'?'s':null,route:kind==='course'?'#/study/course/detail/subject-course/c/6/s':'#/study/course-middle/c/2',relearn:{kind:'course',manualRequired:true,reason:'请在平台处理归档恢复。'}});await f.c.tick();assert.equal(f.c.getState().status,'paused');assert.match(f.c.getState().message,/重新学习/u);assert.equal(f.shared['wangda-assistant.task'].runRequested,false);f.c.destroy();
+  }
+});
+
+test('播放异步失败晚到时优先处理重学提示，不重试离页并清自动恢复意图', async () => {
+  for(const reject of [false,true]){
+    let settle;const play=new Promise((resolve,fail)=>{settle=()=>reject?fail(Error('blocked')):resolve(false);});const f=await ready(fixture({}, {play:()=>play}));
+    await f.c.setAutomation({enabled:true,resumeOnReload:true});await f.c.start();f.page(course([section()],{media:{paused:true,ended:false}}));await f.c.tick();
+    f.page({relearn:{kind:'course',manualRequired:true,reason:'请人工处理归档恢复。'}});f.actions.length=0;settle();for(let i=0;i<40;i++)await Promise.resolve();
+    assert.equal(f.c.getState().status,'paused');assert.match(f.c.getState().message,/重新学习/u);assert.equal(f.shared['wangda-assistant.task'].runRequested,false);assert.equal(f.actions.includes('leave'),false);f.c.destroy();
+  }
+});
+
 async function twoOrderedTasks(f) {
   f.page({courses:[...f.page().courses,{id:'d',title:'原专区剩余课程',required:true,status:'learning',route:'#/study/course/detail/subject-course/d/6/s'}]});
   await ready(f);

@@ -11,7 +11,7 @@ function fixture(overrides = {}) {
   const calls = []; let listener;
   const emit = patch => { Object.assign(state, patch); listener(state); };
   const controller = { getState: () => structuredClone(state), subscribe: fn => { listener = fn; return () => {}; } };
-  for (const name of ['search', 'chooseCandidate', 'collectDraft', 'setSelection', 'refreshTask', 'removeTask', 'setWindow', 'start', 'pause', 'retry', 'skipCurrent', 'draftSetSelection', 'discardDraft', 'selectCourses', 'setAutomation']) controller[name] = async (...args) => { calls.push([name, ...args]); if (name === 'setWindow') emit({ window: args[0] }); if (name === 'setAutomation') emit({automation:args[0]}); return true; };
+  for (const name of ['search', 'chooseCandidate', 'collectDraft', 'setSelection', 'setTaskMode', 'recheckCompleted', 'refreshTask', 'removeTask', 'setWindow', 'start', 'pause', 'retry', 'skipCurrent', 'draftSetSelection', 'discardDraft', 'selectCourses', 'setAutomation']) controller[name] = async (...args) => { calls.push([name, ...args]); if (name === 'setWindow') emit({ window: args[0] }); if (name === 'setAutomation') emit({automation:args[0]}); return true; };
   controller.addDraft = async () => { calls.push(['addDraft']); emit({ tasks: [...state.tasks, task()], draft: null, candidates: [] }); return true; };
   controller.moveTask = async (id, index) => { calls.push(['moveTask',id,index]); const tasks=[...state.tasks]; tasks.splice(index,0,...tasks.splice(tasks.findIndex(t=>t.id===id),1)); emit({tasks}); return true; };
   controller.diagnose = () => { calls.push(['diagnose']); return { kind: 'home', courses: 0 }; };
@@ -20,6 +20,21 @@ function fixture(overrides = {}) {
   const close = () => { panel.destroy(); dom.window.close(); };
   return { dom, state, calls, emit, root, click, close, panel };
 }
+
+test('课程名称筛选保留隐藏勾选、完成匹配自动展开、焦点和筛选跨tick不变', async () => {
+  const t=task('t',[course('a'),course('b','completed',true),course('c')]); const f=fixture({tasks:[t]});f.panel.open();await f.click('detail-t');
+  const filter=f.root.querySelector('[name="course-filter-t"]');assert.ok(filter); filter.focus();filter.value='课程b';filter.dispatchEvent(new f.dom.window.Event('input'));f.emit({message:'更新'});
+  const detail=f.root.querySelector('[data-task-detail="t"]'); assert.equal(f.root.activeElement,filter);assert.equal(filter.value,'课程b');assert.equal(detail.querySelector('[data-course="a"]').closest('label').hidden,true);assert.equal(detail.querySelector('[data-course="a"]').checked,true);
+  assert.equal(detail.querySelector('[data-course="b"]').closest('label').hidden,false);assert.equal(detail.querySelector('[data-completed]').open,true);assert.match(detail.textContent,/已选 3 门/u);assert.match(detail.textContent,/筛选不会取消/u);
+  filter.value='不存在';filter.dispatchEvent(new f.dom.window.Event('input'));assert.equal(detail.querySelector('[data-no-matches]').hidden,false);f.close();
+});
+
+test('范围入口调用设置，复查项不计完成且收起可以开始', async () => {
+  const t=task(); t.done=['a']; t.recheck=['a'];t.selectionMode='specific';const f=fixture({tasks:[t],activeTaskId:'t'});f.panel.open();await f.click('detail-t');
+  const mode=f.root.querySelector('[name="course-mode-t"]');assert.ok(mode);assert.equal(mode.value,'specific');mode.value='all-pending';mode.dispatchEvent(new f.dom.window.Event('change'));for(let i=0;i<30;i++)await Promise.resolve();assert.deepEqual(f.calls.at(-1),['setTaskMode','t','all-pending']);
+  await f.click('recheck-t');assert.deepEqual(f.calls.at(-1),['recheckCompleted','t']);assert.match(f.root.querySelector('[data-task-summary="t"]').textContent,/完成 0/u);assert.match(f.root.querySelector('[data-task-detail="t"]').textContent,/待复查/u);assert.equal(f.root.querySelector('[data-action="run-toggle"]').disabled,false);
+  f.emit({status:'running'});assert.equal(mode.disabled,true);assert.equal(f.root.querySelector('[data-action="recheck-t"]').disabled,true);assert.equal(f.root.querySelector('[name="course-filter-t"]').disabled,false);f.close();
+});
 
 test('运行中可上移下移，DOM顺序同步且详情保持，首尾禁用', async () => {
   const f=fixture({tasks:[task('a'),task('b'),task('c')],status:'running',activeTaskId:'a'}); f.panel.open();

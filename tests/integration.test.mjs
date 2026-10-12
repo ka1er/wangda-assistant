@@ -38,6 +38,23 @@ function setup() {
   subject(); return { w, c, a, subject, search, course, complete, elapse, collect, panel, root, click, change, add, close };
 }
 
+test('指定课程通过筛选手选已完成卡片，刷新不加新课，复查历史后等待新增课节完成', async () => {
+  const f=setup(); f.panel.open(); await f.add('s',[['a','未开始',true],['b','已完成',false]]);
+  const mode=f.root.querySelector('[name="course-mode-draft"]');assert.ok(mode);mode.value='specific';mode.dispatchEvent(new f.w.Event('change'));for(let i=0;i<40;i++)await Promise.resolve();
+  assert.deepEqual(f.c.getState().draft.courses.map(c=>c.selected),[false,false]);const filter=f.root.querySelector('[name="course-filter-draft"]');filter.value='课程b';filter.dispatchEvent(new f.w.Event('input'));
+  assert.equal(f.root.querySelector('[data-draft] [data-completed]').open,true);await f.change('[data-draft] [data-course="b"]',true);await f.click('add-draft'); const id=f.c.getState().tasks[0].id;
+  await f.click('start');await f.c.tick();assert.match(f.w.location.hash,/subject-course\/b\/6\/s$/u);f.course('b');f.complete('doc');await f.c.tick();assert.equal(f.c.getState().status,'complete');
+  await f.click(`detail-${id}`);await f.click(`refresh-${id}`);f.subject('s',[['a','未开始',true],['b','已完成',false],['new','未开始',true]]);await f.c.tick();assert.deepEqual(f.c.getState().tasks[0].courses.map(c=>c.selected),[false,true,false]);
+  await f.click(`recheck-${id}`);assert.deepEqual(f.c.getState().tasks[0].done,['b']);assert.equal(f.root.querySelector('[data-action="run-toggle"]').disabled,false);await f.click('run-toggle');await f.c.tick();f.course('b');await f.c.tick();assert.equal(f.c.getState().status,'running');assert.deepEqual(f.c.getState().tasks[0].recheck,['b']);
+  f.complete('doc');await f.c.tick();assert.equal(f.c.getState().status,'complete');assert.deepEqual(f.c.getState().tasks[0].done,['b']);assert.deepEqual(f.c.getState().tasks[0].recheck,[]);f.close();
+});
+
+test('准备专题遇归档重学页时明确暂停，保留既有队列且不点击恢复按钮', async () => {
+  const f=setup();await f.collect();const before=f.c.getState().tasks;f.panel.open();await f.click('add');f.root.querySelector('[name="target"]').value='归档专区';await f.click('search');f.search('archived');await f.c.tick();await f.c.tick();await f.click('candidate-archived');
+  f.w.location.hash='#/study/subject-middle/archived/1';const container=f.w.document.createElement('div');container.innerHTML='<h2>该专题已完成</h2><button id="again">重新学习</button>';f.w.document.body.append(container);let clicks=0;container.querySelector('button').onclick=()=>clicks++;await f.c.tick();
+  assert.equal(f.c.getState().status,'paused');assert.match(f.c.getState().message,/重新学习.*归档/u);assert.deepEqual(f.c.getState().tasks,before);assert.equal(clicks,0);f.close();
+});
+
 test('播放期间拖动专区，当前课节保持，下一门进入新优先专区再返回原专区', async () => {
   const f=setup(); f.panel.open(); await f.add('s',[['a','学习中',true],['b','未开始',true]]); await f.click('add-draft'); await f.add('s2',[['z','学习中',false]]); await f.click('add-draft');
   const [a,b]=f.c.getState().tasks; await f.click('start'); await f.c.tick(); f.course('a',true); let pauses=0; f.w.document.querySelector('video').pause=()=>{pauses++;}; await f.c.tick();

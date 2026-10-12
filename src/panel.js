@@ -11,6 +11,7 @@ export function createPanel(win, controller, version) {
   const shell = element('section'); shell.setAttribute('aria-label', '网大助手');
   element('style', 'section{display:flex;flex-direction:column;max-height:calc(100dvh - 32px)}header{flex-shrink:0}.body{min-height:0}');
   element('style', '.task-head{display:flex;align-items:flex-start;gap:7px}.task-head h3{flex:1;min-width:0}.sort-actions{display:flex;gap:4px;flex-shrink:0}.sort-actions button{padding:2px 5px;font-size:12px}.sort-handle{cursor:grab}.sort-handle:active{cursor:grabbing}article[data-drop=before]{border-top:3px solid #176ac2}article[data-drop=after]{border-bottom:3px solid #176ac2}article[data-dragging]{opacity:.6}');
+  element('style', 'select,input[type=search]{font:inherit;width:100%;border:1px solid #b8c9d9;border-radius:4px;background:#fff;color:#17344d;padding:6px}');
   const header = element('header', '', shell);
   const headline = element('div', '', header); headline.className = 'headline';
   const title = element('div', '', headline); element('strong', '网大助手', title); element('small', ` ${version}`, title);
@@ -90,7 +91,8 @@ export function createPanel(win, controller, version) {
   const taskNodes = new Map(); let candidateSignature = ''; let draftSubjectId = null;
   const setOpen = open => { body.hidden = !open; toggle.textContent = open ? '收起' : '展开'; toggle.setAttribute('aria-expanded', String(open)); };
   const eligible = task => task.courses.filter(course => course.selected && (task.scope === 'all' || course.required));
-  const counts = task => { const selected = eligible(task); return { selected: selected.length, done: selected.filter(course => task.done.includes(course.id)).length, skipped: selected.filter(course => task.skipped.includes(course.id)).length, deferred: task.deferred?.length || 0 }; };
+  const isDone = (task, id) => Boolean(task?.done.includes(id) && !task.recheck?.includes(id));
+  const counts = task => { const selected = eligible(task); return { selected: selected.length, done: selected.filter(course => isDone(task, course.id)).length, skipped: selected.filter(course => task.skipped.includes(course.id)).length, deferred: task.deferred?.length || 0 }; };
   const saveWindow = async () => {
     const next = { start: fields.start.value.trim(), end: fields.end.value.trim() };
     if (JSON.stringify(next) !== JSON.stringify(controller.getState().window) && !await controller.setWindow(next)) return false;
@@ -114,16 +116,32 @@ export function createPanel(win, controller, version) {
     for (const node of taskList.children) { delete node.dataset.drop; delete node.dataset.dragging; }
   };
   function createCourseList(parent, taskId = null) {
+    const modeLabel = element('label', '学习范围', parent); const mode = element('select', '', modeLabel); mode.name = `course-mode-${taskId || 'draft'}`; editors.add(mode);
+    for (const [value, text] of [['all-pending', '专区全部待学（可调整勾选）'], ['specific', '指定课程（只学手动选择）']]) { const option = element('option', text, mode); option.value = value; }
+    element('p', '切换范围会重设勾选；指定课程先清空，再选择需要的课程。', parent).className = 'muted';
+    mode.addEventListener('change', async () => {
+      if (mode.disabled) return; busy.add(mode); mode.disabled = true;
+      try { await controller.setTaskMode(taskId, mode.value); } catch { diagnostic.textContent = '学习范围未保存，请重试。'; }
+      finally { busy.delete(mode); render(controller.getState()); }
+    });
+    const filterLabel = element('label', '筛选课程名称', parent); const filter = element('input', '', filterLabel); filter.type = 'search'; filter.name = `course-filter-${taskId || 'draft'}`; filter.placeholder = '输入课程名称或关键词';
+    filter.addEventListener('input', () => render(controller.getState()));
+    const selection = element('p', '', parent); selection.className = 'muted';
+    element('p', '筛选不会取消隐藏课程的勾选；批量选择作用于整份清单。', parent).className = 'muted';
     const controls = element('div', '', parent); controls.className = 'buttons';
-    for (const [mode, caption] of [['unfinished', '全部未完成'], ['required', '仅必修'], ['none', '清空选择']]) button(`select-${mode}-${taskId || 'draft'}`, caption, controls, () => controller.selectCourses(taskId, mode));
+    for (const [mode, caption] of [['unfinished', '全部未完成'], ['required', '仅必修'], ['none', '清空选择'], ['completed', '勾选已完成']]) button(`select-${mode}-${taskId || 'draft'}`, caption, controls, () => controller.selectCourses(taskId, mode));
     const pending = element('div', '', parent); const completed = element('details', '', parent); completed.dataset.completed = '';
     const summary = element('summary', '已完成课程', completed); const completeList = element('div', '', completed);
-    return { pending, completed, summary, completeList, nodes: new Map() };
+    const noMatches = element('p', '没有匹配的课程，请调整关键词。', parent); noMatches.dataset.noMatches = ''; noMatches.className = 'muted';
+    return { pending, completed, summary, completeList, nodes: new Map(), mode, filter, selection, noMatches };
   }
   function updateCourses(view, courses, item = null) {
     const ids = new Set(courses.map(course => course.id));
     for (const [id, row] of view.nodes) if (!ids.has(id)) { editors.delete(row.input); if (row.retry) editors.delete(row.retry); row.label.remove(); view.nodes.delete(id); }
-    let completedCount = 0;
+    let completedCount = 0, visibleCount = 0, matchedCompleted = 0;
+    const query = view.filter.value.trim().toLocaleLowerCase();
+    view.mode.value = (item || latest.draft)?.selectionMode || 'all-pending';
+    view.selection.textContent = `已选 ${courses.filter(course => course.selected && (item?.scope !== 'required' || course.required)).length} 门 / 共 ${courses.length} 门`;
     for (const course of courses) {
       let row = view.nodes.get(course.id);
       if (!row) {
@@ -140,9 +158,10 @@ export function createPanel(win, controller, version) {
         const retry = item ? button(`retry-${item.id}-${course.id}`, '重试', label, () => controller.retry(item.id, course.id)) : null;
         row = { label, input, caption, meta, retry }; view.nodes.set(course.id, row);
       }
-      const done = item?.done.includes(course.id) || course.status === 'completed'; const skipped = item?.skipped.includes(course.id);
+      const recheck = item?.recheck?.includes(course.id);
+      const done = !recheck && (isDone(item, course.id) || course.status === 'completed'); const skipped = item?.skipped.includes(course.id);
       const deferred = item?.deferred?.find(entry => entry.courseId === course.id);
-      const status = item?.done.includes(course.id) ? '已完成' : deferred ? `待处理：${deferred.reason}` : skipped ? '已跳过' : ({ completed: '已完成', learning: '学习中', 'not-started': '未开始', unknown: '待确认' }[course.status] || '待确认');
+      const status = deferred ? `待处理：${deferred.reason}` : skipped ? '已跳过' : recheck ? '待复查课节' : isDone(item, course.id) ? '已完成' : ({ completed: '已完成', learning: '学习中', 'not-started': '未开始', unknown: '待确认' }[course.status] || '待确认');
       row.caption.textContent = course.title; row.meta.textContent = `${status} · ${course.required ? '必修' : '选修'}`; row.input.checked = course.selected;
       row.input.disabled = latest.unavailable || ['running', 'preparing', 'waiting'].includes(latest.status) || Boolean(item?.scope === 'required' && !course.required);
       row.input.dataset.legacyDisabled = String(Boolean(item?.scope === 'required' && !course.required));
@@ -150,8 +169,12 @@ export function createPanel(win, controller, version) {
       const container = done && !skipped && !deferred ? view.completeList : view.pending;
       if (row.label.parentNode !== container) container.append(row.label);
       if (done && !skipped && !deferred) completedCount += 1;
+      row.label.hidden = Boolean(query && !course.title.toLocaleLowerCase().includes(query));
+      if (!row.label.hidden) { visibleCount += 1; if (container === view.completeList) matchedCompleted += 1; }
     }
     view.completed.hidden = completedCount === 0; view.summary.textContent = `已完成课程（${completedCount}）`;
+    if (query && matchedCompleted) view.completed.open = true;
+    view.noMatches.hidden = visibleCount > 0;
   }
   function updateTasks(state) {
     const ids = new Set(state.tasks.map(task => task.id));
@@ -194,6 +217,7 @@ export function createPanel(win, controller, version) {
         const legacy = element('p', '旧任务仅执行必修课程和课节；需要包含选修可移出后重新添加专区。', detail); legacy.className = 'muted';
         const courses = createCourseList(detail, item.id); const actions = element('div', '', detail); actions.className = 'buttons';
         const refresh = button(`refresh-${item.id}`, '更新清单', actions, () => controller.refreshTask(item.id));
+        button(`recheck-${item.id}`, '复查所选已完成课程', actions, () => controller.recheckCompleted(item.id));
         button(`remove-${item.id}`, '移出队列', actions, () => controller.removeTask(item.id));
         view = { article, title, summary, detail, legacy, courses, refresh, handle, up, down }; taskNodes.set(item.id, view);
       }
@@ -204,7 +228,7 @@ export function createPanel(win, controller, version) {
       if (taskList.children[index] !== view.article) taskList.insertBefore(view.article, taskList.children[index] || null);
       const total = counts(item);
       const status = !item.subject ? '尚未读取专区，请移出后重新添加' : !total.selected ? '尚未选择课程' : item.id === state.activeTaskId && ['running', 'preparing', 'waiting'].includes(state.status) ? '执行中' : total.deferred ? '有待处理课程' : item.skipped.length ? '有跳过课程待重试' : total.done === total.selected ? '全部完成' : '待学习';
-      view.summary.textContent = `所选 ${total.selected} · 完成 ${total.done} · 待处理 ${total.deferred} · 跳过 ${total.skipped} · ${status}`;
+      view.summary.textContent = `${item.selectionMode === 'specific' ? '指定课程' : '专区待学'} · 所选 ${total.selected} · 完成 ${total.done} · 待处理 ${total.deferred} · 跳过 ${total.skipped} · ${status}`;
       view.legacy.hidden = item.scope !== 'required'; view.refresh.dataset.legacyDisabled = String(!item.subject); updateCourses(view.courses, item.courses, item);
     }
   }
@@ -234,7 +258,7 @@ export function createPanel(win, controller, version) {
     automatic.checked = state.automation?.enabled === true; resumeOnReload.checked = state.automation?.resumeOnReload === true;
     resumeOnReload.disabled ||= !automatic.checked;
     for (const control of problemActions.querySelectorAll('button')) control.disabled ||= adding;
-    const hasPending = state.tasks.some(item => item.subject && eligible(item).some(course => !item.done.includes(course.id) && !item.skipped.includes(course.id) && !item.deferred?.some(entry => entry.courseId === course.id)));
+    const hasPending = state.tasks.some(item => item.subject && eligible(item).some(course => !isDone(item, course.id) && !item.skipped.includes(course.id) && !item.deferred?.some(entry => entry.courseId === course.id)));
     const cannotStart = starting || state.unavailable || adding || Boolean(state.draft) || !hasPending;
     const hasStarted = Boolean(state.currentCourseId) || state.tasks.some(item => item.current || item.done.length || item.skipped.length || item.deferred?.length);
     startButton.disabled = running || cannotStart;

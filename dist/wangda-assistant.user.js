@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         网大助手
 // @namespace    wangda-assistant
-// @version      0.1.0-beta.7
+// @version      0.1.0-beta.8
 // @description  手动勾选课程、管理多专区任务队列，按平台完成状态连续学习
 // @match        https://wangda.chinamobile.com/*
 // @run-at       document-idle
@@ -142,6 +142,9 @@ const wdAdapterSubjectPattern = new RegExp(`^#/study/subject/detail/(${wdAdapter
 const wdAdapterContextCoursePattern = new RegExp(`^#/study/course/detail/subject-course/(${wdAdapterIdPattern})/6/(${wdAdapterIdPattern})$`, 'u');
 const wdAdapterCoursePattern = new RegExp(`^#/study/course/detail/(${wdAdapterIdPattern})/(\\d+)$`, 'u');
 const wdAdapterErrorPattern = new RegExp(`^#/study/errors/(${wdAdapterIdPattern})&([0-9]+)$`, 'u');
+// Only the middle-page variants observed in the site's router and detail loaders.
+const wdAdapterSubjectRelearnPattern = new RegExp(`^#/study/subject-middle/(${wdAdapterIdPattern})/(1|9)$`, 'u');
+const wdAdapterCourseRelearnPattern = new RegExp(`^#/study/course-middle/(${wdAdapterIdPattern})/(1|2)$`, 'u');
 
 function wdAdapterText(element) {
   return (element?.textContent || '').trim();
@@ -171,6 +174,10 @@ function wdAdapterRoute(hash) {
   if (course) return { kind: 'course', route, subjectId: null, courseId: course[1] };
   const error = wdAdapterErrorPattern.exec(route);
   if (error) return { kind: 'study-error', route, subjectId: null, courseId: error[1], errorCode: error[2] };
+  const subjectRelearn = wdAdapterSubjectRelearnPattern.exec(route);
+  if (subjectRelearn) return { kind: 'subject-relearn', route, subjectId: subjectRelearn[1], courseId: null };
+  const courseRelearn = wdAdapterCourseRelearnPattern.exec(route);
+  if (courseRelearn) return { kind: 'course-relearn', route, subjectId: null, courseId: courseRelearn[1] };
   const kind = route === '#/search' ? 'search' : route === '#/login' ? 'login' : ['', '#/', '#/home'].includes(route) ? 'home' : 'unknown';
   return { kind, route, subjectId: null, courseId: null };
 }
@@ -200,8 +207,47 @@ function wdAdapterSafeSubjectLink(document, href) {
   }
 }
 
+function wdAdapterVisible(element) {
+  const win = element.ownerDocument.defaultView;
+  for (let current = element; current; current = current.parentElement) {
+    if (current.hidden || current.getAttribute('aria-hidden') === 'true' || current.classList.contains('hidden') || (current.tagName === 'DIALOG' && !current.hasAttribute('open'))) return false;
+    const style = win?.getComputedStyle(current);
+    if (style && (style.display === 'none' || ['hidden', 'collapse'].includes(style.visibility) || style.opacity === '0')) return false;
+  }
+  return element.isConnected;
+}
+
+function wdAdapterRelearn(document, page) {
+  const archived = ['subject-relearn', 'course-relearn'].includes(page.kind);
+  const kind = page.kind.startsWith('subject') ? 'subject' : page.kind.startsWith('course') ? 'course' : null;
+  if (!kind) return null;
+  const label = kind === 'subject' ? '专题' : '课程';
+  const prompt = `您已经很久没有学习该${label}了，是否重新学习？`;
+  const update = `（${label}内容可能更新，如有学习要求，建议重新学习）`;
+  const known = new Map([
+    [prompt, prompt], [prompt + update, prompt],
+    [`该${label}已完成，是否重新学习？`, `该${label}已完成，是否重新学习？`],
+    ...(archived ? [[`该${label}已完成`, `该${label}已完成`]] : []),
+  ]);
+  const candidates = archived ? [...document.querySelectorAll('.but-footer > .h3')] : [];
+  for (const dialog of document.querySelectorAll('[role="dialog"], dialog[open], .alertify-dialog')) {
+    candidates.push(dialog, ...dialog.querySelectorAll('.h3, p, .alertify-message'));
+  }
+  let message = '';
+  for (const element of candidates) {
+    const exact = known.get(wdAdapterText(element).replace(/\s+/gu, ''));
+    if (exact && wdAdapterVisible(element)) { message = exact; break; }
+  }
+  if (!archived && !message) return null;
+  // The observed #again handler calls subject-back/course-back before opening a new window.
+  // Reading the prompt must never invoke that handler or intercept native window.confirm.
+  return { kind, message, manualRequired: true, reason: archived
+    ? '重新学习会调用平台归档恢复接口并打开新窗口，请先在平台核对记录后人工处理。'
+    : '尚未验证此提示对应按钮的处理逻辑，请先在平台核对记录后人工处理。' };
+}
+
 function readPage(document, hash) {
-  const page = { ...wdAdapterRoute(hash), title: '', courses: [], candidates: [], sections: [], activeSectionId: null, media: null, issues: [] };
+  const page = { ...wdAdapterRoute(hash), title: '', courses: [], candidates: [], sections: [], activeSectionId: null, media: null, relearn: null, issues: [] };
   if (page.kind === 'unknown') page.issues.push('无法识别当前页面路由');
   if (page.kind === 'subject') {
     page.title = wdAdapterTitle(document.querySelector('.subject-banner .title-row .h3, .banner-info .title-row .h3'));
@@ -285,6 +331,7 @@ function readPage(document, hash) {
       page.candidates.push({ id, title: wdAdapterTitle(link), route });
     }
   }
+  page.relearn = wdAdapterRelearn(document, page);
   return page;
 }
 
@@ -388,7 +435,9 @@ function wdQueueCourses(courses, subject, legacy = false) {
 }
 function wdQueueTask(task, legacy = false) {
   const deferred = task?.deferred ?? [];
-  return task && typeof task.id === 'string' && task.id && typeof task.target === 'string' && task.target.trim() && ['all', 'required'].includes(task.scope) && wdQueueSubject(task.subject) && wdQueueCourses(task.courses, task.subject, legacy) && wdQueueStrings(task.done) && wdQueueStrings(task.skipped) && (task.current === null || typeof task.current === 'string') && [...task.done, ...task.skipped, ...(task.current ? [task.current] : [])].every(id => task.courses.some(course => course.id === id)) && !task.done.some(id => task.skipped.includes(id)) && Array.isArray(deferred) && new Set(deferred.map(item => item?.courseId)).size === deferred.length && deferred.every(item => item && typeof item.courseId === 'string' && typeof item.reason === 'string' && item.reason.trim() && item.reason.length <= 500 && task.courses.some(course => course.id === item.courseId) && !task.done.includes(item.courseId) && !task.skipped.includes(item.courseId));
+  if (task?.selectionMode !== undefined && !['all-pending', 'specific'].includes(task.selectionMode)) return false;
+  if (task?.recheck !== undefined && (!wdQueueStrings(task.recheck) || !task.recheck.every(id => task.courses?.some(course => course.id === id)))) return false;
+  return task && typeof task.id === 'string' && task.id && typeof task.target === 'string' && task.target.trim() && ['all', 'required'].includes(task.scope) && wdQueueSubject(task.subject) && wdQueueCourses(task.courses, task.subject, legacy) && wdQueueStrings(task.done) && wdQueueStrings(task.skipped) && (task.current === null || typeof task.current === 'string') && [...task.done, ...task.skipped, ...(task.current ? [task.current] : [])].every(id => task.courses.some(course => course.id === id)) && !task.done.some(id => task.skipped.includes(id) && !task.recheck?.includes(id)) && Array.isArray(deferred) && new Set(deferred.map(item => item?.courseId)).size === deferred.length && deferred.every(item => item && typeof item.courseId === 'string' && typeof item.reason === 'string' && item.reason.trim() && item.reason.length <= 500 && task.courses.some(course => course.id === item.courseId) && (!task.done.includes(item.courseId) || task.recheck?.includes(item.courseId)) && !task.skipped.includes(item.courseId));
 }
 
 function normalizeQueue(value) {
@@ -406,12 +455,12 @@ function normalizeQueue(value) {
   // Only the public queue schema is persisted; transient state and unrelated keys are excluded.
   return { version: 2, taskId: value.taskId, revision: value.revision, window: { start: value.window.start, end: value.window.end }, activeTaskId: value.activeTaskId,
     automation: { enabled: value.automation?.enabled === true, resumeOnReload: value.automation?.resumeOnReload === true }, runRequested: value.automation?.enabled === true && value.runRequested === true,
-    tasks: value.tasks.map(task => ({ id: task.id, target: task.target, scope: task.scope, subject: task.subject ? { id: task.subject.id, title: task.subject.title, route: task.subject.route } : null, courses: task.courses.map(({ id, title, route, required, status, selected }) => ({ id, title, route, required, status, selected })), done: [...task.done], skipped: [...task.skipped], deferred: (task.deferred || []).map(({courseId, reason}) => ({courseId, reason})), current: task.current })) };
+    tasks: value.tasks.map(task => ({ id: task.id, target: task.target, scope: task.scope, selectionMode: task.selectionMode || 'all-pending', recheck: [...(task.recheck || [])], subject: task.subject ? { id: task.subject.id, title: task.subject.title, route: task.subject.route } : null, courses: task.courses.map(({ id, title, route, required, status, selected }) => ({ id, title, route, required, status, selected })), done: [...task.done], skipped: [...task.skipped], deferred: (task.deferred || []).map(({courseId, reason}) => ({courseId, reason})), current: task.current })) };
 }
 
-function mergeCourses(previous, incoming) {
+function mergeCourses(previous, incoming, selectionMode = 'all-pending') {
   const old = new Map(previous.map(course => [course.id, course]));
-  const result = incoming.map(({ id, title, route, required, status }) => ({ id, title, route, required: required === true, status: wdQueueStatuses.has(status) ? status : 'unknown', selected: old.has(id) ? old.get(id).selected : ['learning', 'not-started'].includes(status) }));
+  const result = incoming.map(({ id, title, route, required, status }) => ({ id, title, route, required: required === true, status: wdQueueStatuses.has(status) ? status : 'unknown', selected: old.has(id) ? old.get(id).selected : selectionMode !== 'specific' && ['learning', 'not-started'].includes(status) }));
   const seen = new Set(result.map(course => course.id));
   for (const course of previous) if (!seen.has(course.id)) result.push({ ...course, status: 'unknown' });
   return result;
@@ -468,6 +517,7 @@ function createController(options) {
   const seenPlaying = new Set();
   const listeners = new Set();
   const copy = value => JSON.parse(JSON.stringify(value));
+  const isDone = (item, id) => Boolean(item?.done?.includes(id) && !item.recheck?.includes(id));
   const getState = () => ({ status, phase: restorePending ? 'resuming' : recovery?.network ? 'offline' : recovery ? 'retrying' : status, message, unavailable: blocked, window: copy(record?.window || defaultWindow), automation: copy(record?.automation || defaultAutomation), tasks: copy(record?.tasks || []), activeTaskId: record?.activeTaskId || null, currentCourseId: task?.current || null, currentSectionTitle, candidates: copy(candidates), draft: copy(draft), problem: copy(problem) });
   const emit = () => { const state = getState(); for (const listener of listeners) listener(state); };
   const tell = text => { message = text; emit(); return false; };
@@ -583,16 +633,17 @@ function createController(options) {
   };
   const validPage = (page, subject = null) => page.kind === 'subject' && typeof page.subjectId === 'string' && page.title?.trim() && page.route === `#/study/subject/detail/${page.subjectId}` && page.courses?.length && (!subject || (page.subjectId === subject.id && normalizeTitle(page.title) === normalizeTitle(subject.title)));
   const collectPage = (page, refreshId = null) => {
+    if (page.relearn?.manualRequired) return tell(`遇到“重新学习”提示。${page.relearn.reason} 处理后请重新读取专区。`);
     const existing = refreshId ? record?.tasks.find(item => item.id === refreshId) : null;
     if (!validPage(page, existing?.subject)) return tell('请进入对应专题课程列表，等待标题和课程加载完成后再读取。');
     if (refreshId) {
       if (!existing) return false;
-      existing.courses = mergeCourses(existing.courses, page.courses);
+      existing.courses = mergeCourses(existing.courses, page.courses, existing.selectionMode);
       if (!persist()) return false;
       message = '课程清单已刷新，勾选和学习记录已保留。' + (nextEntry() ? pendingNotice : ''); emit(); return true;
     }
     candidates = [];
-    draft = { target: target || page.title, subject: { id: page.subjectId, title: page.title, route: page.route }, courses: mergeCourses([], page.courses) };
+    draft = { target: target || page.title, selectionMode: 'all-pending', subject: { id: page.subjectId, title: page.title, route: page.route }, courses: mergeCourses([], page.courses) };
     message = '已读取待添加清单，请核对课程勾选后添加。'; emit(); return true;
   };
   const collectDraft = async () => edit(() => { try { return collectPage(adapter.read()); } catch { return tell('当前页面读取失败，请稍后重试。'); } });
@@ -602,9 +653,9 @@ function createController(options) {
     course.selected = Boolean(selected); emit(); return true;
   };
   const selectCourses = (taskId, mode) => {
-    if (!['unfinished', 'required', 'none'].includes(mode) || !editable()) return false;
+    if (!['unfinished', 'required', 'none', 'completed'].includes(mode) || !editable()) return false;
     const apply = (courses, item = null) => {
-      for (const course of courses) course.selected = mode !== 'none' && ['not-started', 'learning'].includes(course.status) && !item?.done.includes(course.id) && (mode !== 'required' || course.required) && (item?.scope !== 'required' || course.required);
+      for (const course of courses) course.selected = Boolean((mode === 'completed' ? course.selected || course.status === 'completed' || item?.done.includes(course.id) : mode !== 'none' && ['not-started', 'learning'].includes(course.status) && !isDone(item, course.id)) && (mode !== 'required' || course.required) && (item?.scope !== 'required' || course.required));
       emit(); return true;
     };
     if (taskId === null) return draft ? apply(draft.courses) : false;
@@ -621,6 +672,28 @@ function createController(options) {
   const setSelection = async (taskId, id, selected) => edit(() => {
     const item = record?.tasks.find(item => item.id === taskId)?.courses.find(course => course.id === id); if (!item) return false;
     item.selected = Boolean(selected); return persist();
+  });
+  const setTaskMode = async (taskId, mode) => {
+    if (!['all-pending', 'specific'].includes(mode) || !editable()) return false;
+    const apply = item => {
+      if (!item) return false;
+      if (item.selectionMode === mode) return true;
+      item.selectionMode = mode;
+      for (const course of item.courses) course.selected = mode === 'all-pending' && ['not-started', 'learning'].includes(course.status) && !isDone(item, course.id) && (item.scope !== 'required' || course.required);
+      return true;
+    };
+    if (taskId === null) { const changed = apply(draft); if (changed) emit(); return changed; }
+    return edit(() => { const item = record?.tasks.find(item => item.id === taskId); return apply(item) && persist(); });
+  };
+  const recheckCompleted = async taskId => edit(() => {
+    const item = record?.tasks.find(item => item.id === taskId);
+    if (!item) return false;
+    const ids = item.courses.filter(course => course.selected && (item.scope === 'all' || course.required) && (item.done.includes(course.id) || course.status === 'completed')).map(course => course.id);
+    if (!ids.length) return tell('请先勾选需要复查的已完成课程。');
+    item.recheck = [...new Set([...(item.recheck || []), ...ids])];
+    item.skipped = item.skipped.filter(id => !ids.includes(id)); item.deferred = (item.deferred || []).filter(entry => !ids.includes(entry.courseId));
+    if (!persist()) return false;
+    message = `已安排 ${ids.length} 门课程复查，请点击开始；将核对课节状态，只学习未完成内容。`; emit(); return true;
   });
   const removeTask = async taskId => edit(() => {
     if (!record?.tasks.some(item => item.id === taskId)) return false;
@@ -680,17 +753,21 @@ function createController(options) {
   const queue = (item = task) => item ? item.courses.filter(course => course.selected && (item.scope === 'all' || course.required)) : [];
   const nextEntry = () => {
     for (const item of record?.tasks || []) {
-      const course = queue(item).find(course => !item.done.includes(course.id) && !item.skipped.includes(course.id) && !item.deferred?.some(entry => entry.courseId === course.id));
+      const course = queue(item).find(course => !isDone(item, course.id) && !item.skipped.includes(course.id) && !item.deferred?.some(entry => entry.courseId === course.id));
       if (course) return { item, course };
     }
     return null;
   };
   const matchesCourse = (page, course) => page.kind === 'course' && page.courseId === course.id && page.subjectId === task.subject.id && page.route === course.route;
+  const pauseForRelearn = (page, current) => {
+    if (!page.relearn?.manualRequired || !(matchesCourse(page, current) || (page.kind === 'course-relearn' && page.courseId === current.id) || (['subject', 'subject-relearn'].includes(page.kind) && page.subjectId === task.subject.id))) return false;
+    stop(`遇到“重新学习”提示。${page.relearn.reason} 处理后请手动继续队列。`); notify(message); return true;
+  };
   const start = async (preferred = null) => {
     if (!editable() || !record || !record.tasks.length) return tell('请先添加专题任务。');
     if (!isWithinWindow(now(), record.window) && !record.automation.enabled) return tell('当前不在允许的北京时间学习时段内。');
     const preferredTask = preferred && record.tasks.find(item => item.id === preferred.taskId);
-    const preferredCourse = queue(preferredTask).find(course => course.id === preferred.courseId && course.selected && !preferredTask.done.includes(course.id) && !preferredTask.skipped.includes(course.id) && !preferredTask.deferred?.some(entry => entry.courseId === course.id));
+    const preferredCourse = queue(preferredTask).find(course => course.id === preferred.courseId && course.selected && !isDone(preferredTask, course.id) && !preferredTask.skipped.includes(course.id) && !preferredTask.deferred?.some(entry => entry.courseId === course.id));
     const entry = preferredCourse ? { item: preferredTask, course: preferredCourse } : nextEntry();
     if (!entry || !entry.item.subject) return tell(record.tasks.some(item => item.deferred?.length) ? '仍有待处理课程，请在详情中重试。' : record.tasks.some(item => item.skipped.length) ? '仍有跳过课程未完成，请重试。' : '请勾选尚未核对的课程。');
     const token = generation;
@@ -777,7 +854,8 @@ function createController(options) {
     const changed = await edit(() => {
       const item = record?.tasks.find(item => item.id === taskId);
       if (!item?.courses.some(course => course.id === courseId)) return false;
-      item.skipped = item.skipped.filter(id => id !== courseId); item.done = item.done.filter(id => id !== courseId);
+      item.skipped = item.skipped.filter(id => id !== courseId);
+      if (!item.recheck?.includes(courseId)) item.done = item.done.filter(id => id !== courseId);
       item.deferred = (item.deferred || []).filter(entry => entry.courseId !== courseId);
       item.courses.find(course => course.id === courseId).selected = true;
       record.activeTaskId = item.id; item.current = courseId; problem = null; return persist();
@@ -790,7 +868,8 @@ function createController(options) {
       const item = record?.tasks.find(item => item.id === problem.taskId);
       const course = item?.courses.find(course => course.id === problem.courseId); if (!course) return false;
       if (!item.skipped.includes(problem.courseId)) item.skipped.push(problem.courseId);
-      item.done = item.done.filter(id => id !== problem.courseId); problem = null;
+      if (!item.recheck?.includes(problem.courseId)) item.done = item.done.filter(id => id !== problem.courseId);
+      problem = null;
       if (!persist()) return false;
       try {
         const page = adapter.read();
@@ -837,6 +916,9 @@ function createController(options) {
         return;
       }
       if (status === 'preparing') {
+        if (preparing.stage === 'subject' && page.relearn?.manualRequired && page.subjectId === preparing.candidate.id && ['subject', 'subject-relearn'].includes(page.kind)) {
+          stop(`遇到“重新学习”提示。${page.relearn.reason} 处理后请重新读取专区。`); notify(message); return;
+        }
         if (milliseconds() - preparing.since >= 30000) { stop(subjectTitleIssue(page) || '搜索或专题加载超时，请手动打开专题后读取。'); return; }
         if (preparing.stage === 'search-page' && page.kind === 'search') {
           if (adapter.searchKeyword(target)) preparing = { stage: 'results', since: milliseconds() };
@@ -855,6 +937,7 @@ function createController(options) {
       }
       const current = queue().find(course => course.id === task.current);
       if (!current) { stop('当前课程不在已选清单中。', true); return; }
+      if (pauseForRelearn(page, current)) return;
       if (recovery) {
         if (page.route !== recovery.before && page.route !== task.subject.route && !matchesCourse(page, current)) { stop('页面已离开目标课程，请确认后重新开始。'); return; }
         if (!recovery.network && milliseconds() < recovery.until) return;
@@ -878,15 +961,15 @@ function createController(options) {
       if (!matchesCourse(page, current)) {
         const entry = nextEntry();
         const next = entry?.course;
-        if (task.done.includes(current.id) && next && page.subjectId === entry.item.subject?.id && page.courseId === next.id && page.route === next.route) { nextCourse(page); return; }
+        if (isDone(task, current.id) && next && page.subjectId === entry.item.subject?.id && page.courseId === next.id && page.route === next.route) { nextCourse(page); return; }
         const nativeNext = task.courses[task.courses.findIndex(course => course.id === current.id) + 1];
-        if (task.done.includes(current.id) && grace?.key === `course:${current.id}` && next && nativeNext && matchesCourse(page, nativeNext)) {
+        if (isDone(task, current.id) && grace?.key === `course:${current.id}` && next && nativeNext && matchesCourse(page, nativeNext)) {
           // The site advanced within the just-completed course's subject before applying the new queue order.
           adapter.pauseMedia(); nextCourse(page); return;
         }
         stop('页面已离开目标课程，请确认后重新开始。'); return;
       }
-      if (task.done.includes(current.id)) {
+      if (isDone(task, current.id)) {
         if (!grace || milliseconds() - grace.since >= 6000) nextCourse(page);
         return;
       }
@@ -901,7 +984,8 @@ function createController(options) {
       if (decision.type === 'manual') { if (record.automation.enabled) deferCurrent('此课节需要人工处理，请完成后重试。'); else { stop('此课节需要人工处理，请在当前页面完成后再继续。'); notify(message); } return; }
       if (page.activeSectionId && !active) { waitFor('focus', '当前课节无法确认'); return; }
       if (decision.type === 'course-complete') {
-        task.done.push(current.id);
+        if (!task.done.includes(current.id)) task.done.push(current.id);
+        task.recheck = (task.recheck || []).filter(id => id !== current.id);
         if (!persist()) return;
         if (!nextEntry()) { nextCourse(page); return; }
         grace = { key: `course:${current.id}`, since: milliseconds() }; loading = null; return;
@@ -938,6 +1022,7 @@ function createController(options) {
                 if (mediaPending?.key === key) mediaPending = null;
                 if (!isWithinWindow(now(), record.window)) { waitWindow(); return; }
                 const latest = adapter.read();
+                if (pauseForRelearn(latest, current)) return;
                 if (!matchesCourse(latest, current) || latest.activeSectionId !== active.id) return;
                 if (success) seenPlaying.add(key);
                 if (!success) { if (record.automation.enabled) recover('浏览器未能自动播放。'); else { stop('浏览器未能自动播放，请在当前页手动播放后再继续。'); notify(message); } }
@@ -949,6 +1034,7 @@ function createController(options) {
                 if (mediaPending?.key === key) mediaPending = null;
                 if (!isWithinWindow(now(), record.window)) { waitWindow(); return; }
                 const latest = adapter.read();
+                if (pauseForRelearn(latest, current)) return;
                 if (!matchesCourse(latest, current) || latest.activeSectionId !== active.id) return;
                 if (record.automation.enabled) recover('播放失败。'); else { stop('播放失败，请手动播放后再继续。'); notify(message); }
               } catch { if (generation === token && status === 'running') stop('页面读取或操作异常，已暂停并退出学习页，请人工确认。', true); }
@@ -963,7 +1049,7 @@ function createController(options) {
   if (!blocked && record?.automation.enabled && record.automation.resumeOnReload && record.runRequested) { restorePending = true; message = '正在准备恢复上次开始的队列。'; watch(); }
   return {
     getState, subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
-    search, chooseCandidate, collectDraft, draftSetSelection, selectCourses, addDraft, discardDraft, setSelection, refreshTask, removeTask, moveTask, setWindow, setAutomation,
+    search, chooseCandidate, collectDraft, draftSetSelection, selectCourses, addDraft, discardDraft, setSelection, setTaskMode, recheckCompleted, refreshTask, removeTask, moveTask, setWindow, setAutomation,
     start, pause, retry, skipCurrent, tick,
     diagnose() {
       const diagnostic = adapter.diagnose();
@@ -991,6 +1077,7 @@ function createPanel(win, controller, version) {
   const shell = element('section'); shell.setAttribute('aria-label', '网大助手');
   element('style', 'section{display:flex;flex-direction:column;max-height:calc(100dvh - 32px)}header{flex-shrink:0}.body{min-height:0}');
   element('style', '.task-head{display:flex;align-items:flex-start;gap:7px}.task-head h3{flex:1;min-width:0}.sort-actions{display:flex;gap:4px;flex-shrink:0}.sort-actions button{padding:2px 5px;font-size:12px}.sort-handle{cursor:grab}.sort-handle:active{cursor:grabbing}article[data-drop=before]{border-top:3px solid #176ac2}article[data-drop=after]{border-bottom:3px solid #176ac2}article[data-dragging]{opacity:.6}');
+  element('style', 'select,input[type=search]{font:inherit;width:100%;border:1px solid #b8c9d9;border-radius:4px;background:#fff;color:#17344d;padding:6px}');
   const header = element('header', '', shell);
   const headline = element('div', '', header); headline.className = 'headline';
   const title = element('div', '', headline); element('strong', '网大助手', title); element('small', ` ${version}`, title);
@@ -1070,7 +1157,8 @@ function createPanel(win, controller, version) {
   const taskNodes = new Map(); let candidateSignature = ''; let draftSubjectId = null;
   const setOpen = open => { body.hidden = !open; toggle.textContent = open ? '收起' : '展开'; toggle.setAttribute('aria-expanded', String(open)); };
   const eligible = task => task.courses.filter(course => course.selected && (task.scope === 'all' || course.required));
-  const counts = task => { const selected = eligible(task); return { selected: selected.length, done: selected.filter(course => task.done.includes(course.id)).length, skipped: selected.filter(course => task.skipped.includes(course.id)).length, deferred: task.deferred?.length || 0 }; };
+  const isDone = (task, id) => Boolean(task?.done.includes(id) && !task.recheck?.includes(id));
+  const counts = task => { const selected = eligible(task); return { selected: selected.length, done: selected.filter(course => isDone(task, course.id)).length, skipped: selected.filter(course => task.skipped.includes(course.id)).length, deferred: task.deferred?.length || 0 }; };
   const saveWindow = async () => {
     const next = { start: fields.start.value.trim(), end: fields.end.value.trim() };
     if (JSON.stringify(next) !== JSON.stringify(controller.getState().window) && !await controller.setWindow(next)) return false;
@@ -1094,16 +1182,32 @@ function createPanel(win, controller, version) {
     for (const node of taskList.children) { delete node.dataset.drop; delete node.dataset.dragging; }
   };
   function createCourseList(parent, taskId = null) {
+    const modeLabel = element('label', '学习范围', parent); const mode = element('select', '', modeLabel); mode.name = `course-mode-${taskId || 'draft'}`; editors.add(mode);
+    for (const [value, text] of [['all-pending', '专区全部待学（可调整勾选）'], ['specific', '指定课程（只学手动选择）']]) { const option = element('option', text, mode); option.value = value; }
+    element('p', '切换范围会重设勾选；指定课程先清空，再选择需要的课程。', parent).className = 'muted';
+    mode.addEventListener('change', async () => {
+      if (mode.disabled) return; busy.add(mode); mode.disabled = true;
+      try { await controller.setTaskMode(taskId, mode.value); } catch { diagnostic.textContent = '学习范围未保存，请重试。'; }
+      finally { busy.delete(mode); render(controller.getState()); }
+    });
+    const filterLabel = element('label', '筛选课程名称', parent); const filter = element('input', '', filterLabel); filter.type = 'search'; filter.name = `course-filter-${taskId || 'draft'}`; filter.placeholder = '输入课程名称或关键词';
+    filter.addEventListener('input', () => render(controller.getState()));
+    const selection = element('p', '', parent); selection.className = 'muted';
+    element('p', '筛选不会取消隐藏课程的勾选；批量选择作用于整份清单。', parent).className = 'muted';
     const controls = element('div', '', parent); controls.className = 'buttons';
-    for (const [mode, caption] of [['unfinished', '全部未完成'], ['required', '仅必修'], ['none', '清空选择']]) button(`select-${mode}-${taskId || 'draft'}`, caption, controls, () => controller.selectCourses(taskId, mode));
+    for (const [mode, caption] of [['unfinished', '全部未完成'], ['required', '仅必修'], ['none', '清空选择'], ['completed', '勾选已完成']]) button(`select-${mode}-${taskId || 'draft'}`, caption, controls, () => controller.selectCourses(taskId, mode));
     const pending = element('div', '', parent); const completed = element('details', '', parent); completed.dataset.completed = '';
     const summary = element('summary', '已完成课程', completed); const completeList = element('div', '', completed);
-    return { pending, completed, summary, completeList, nodes: new Map() };
+    const noMatches = element('p', '没有匹配的课程，请调整关键词。', parent); noMatches.dataset.noMatches = ''; noMatches.className = 'muted';
+    return { pending, completed, summary, completeList, nodes: new Map(), mode, filter, selection, noMatches };
   }
   function updateCourses(view, courses, item = null) {
     const ids = new Set(courses.map(course => course.id));
     for (const [id, row] of view.nodes) if (!ids.has(id)) { editors.delete(row.input); if (row.retry) editors.delete(row.retry); row.label.remove(); view.nodes.delete(id); }
-    let completedCount = 0;
+    let completedCount = 0, visibleCount = 0, matchedCompleted = 0;
+    const query = view.filter.value.trim().toLocaleLowerCase();
+    view.mode.value = (item || latest.draft)?.selectionMode || 'all-pending';
+    view.selection.textContent = `已选 ${courses.filter(course => course.selected && (item?.scope !== 'required' || course.required)).length} 门 / 共 ${courses.length} 门`;
     for (const course of courses) {
       let row = view.nodes.get(course.id);
       if (!row) {
@@ -1120,9 +1224,10 @@ function createPanel(win, controller, version) {
         const retry = item ? button(`retry-${item.id}-${course.id}`, '重试', label, () => controller.retry(item.id, course.id)) : null;
         row = { label, input, caption, meta, retry }; view.nodes.set(course.id, row);
       }
-      const done = item?.done.includes(course.id) || course.status === 'completed'; const skipped = item?.skipped.includes(course.id);
+      const recheck = item?.recheck?.includes(course.id);
+      const done = !recheck && (isDone(item, course.id) || course.status === 'completed'); const skipped = item?.skipped.includes(course.id);
       const deferred = item?.deferred?.find(entry => entry.courseId === course.id);
-      const status = item?.done.includes(course.id) ? '已完成' : deferred ? `待处理：${deferred.reason}` : skipped ? '已跳过' : ({ completed: '已完成', learning: '学习中', 'not-started': '未开始', unknown: '待确认' }[course.status] || '待确认');
+      const status = deferred ? `待处理：${deferred.reason}` : skipped ? '已跳过' : recheck ? '待复查课节' : isDone(item, course.id) ? '已完成' : ({ completed: '已完成', learning: '学习中', 'not-started': '未开始', unknown: '待确认' }[course.status] || '待确认');
       row.caption.textContent = course.title; row.meta.textContent = `${status} · ${course.required ? '必修' : '选修'}`; row.input.checked = course.selected;
       row.input.disabled = latest.unavailable || ['running', 'preparing', 'waiting'].includes(latest.status) || Boolean(item?.scope === 'required' && !course.required);
       row.input.dataset.legacyDisabled = String(Boolean(item?.scope === 'required' && !course.required));
@@ -1130,8 +1235,12 @@ function createPanel(win, controller, version) {
       const container = done && !skipped && !deferred ? view.completeList : view.pending;
       if (row.label.parentNode !== container) container.append(row.label);
       if (done && !skipped && !deferred) completedCount += 1;
+      row.label.hidden = Boolean(query && !course.title.toLocaleLowerCase().includes(query));
+      if (!row.label.hidden) { visibleCount += 1; if (container === view.completeList) matchedCompleted += 1; }
     }
     view.completed.hidden = completedCount === 0; view.summary.textContent = `已完成课程（${completedCount}）`;
+    if (query && matchedCompleted) view.completed.open = true;
+    view.noMatches.hidden = visibleCount > 0;
   }
   function updateTasks(state) {
     const ids = new Set(state.tasks.map(task => task.id));
@@ -1174,6 +1283,7 @@ function createPanel(win, controller, version) {
         const legacy = element('p', '旧任务仅执行必修课程和课节；需要包含选修可移出后重新添加专区。', detail); legacy.className = 'muted';
         const courses = createCourseList(detail, item.id); const actions = element('div', '', detail); actions.className = 'buttons';
         const refresh = button(`refresh-${item.id}`, '更新清单', actions, () => controller.refreshTask(item.id));
+        button(`recheck-${item.id}`, '复查所选已完成课程', actions, () => controller.recheckCompleted(item.id));
         button(`remove-${item.id}`, '移出队列', actions, () => controller.removeTask(item.id));
         view = { article, title, summary, detail, legacy, courses, refresh, handle, up, down }; taskNodes.set(item.id, view);
       }
@@ -1184,7 +1294,7 @@ function createPanel(win, controller, version) {
       if (taskList.children[index] !== view.article) taskList.insertBefore(view.article, taskList.children[index] || null);
       const total = counts(item);
       const status = !item.subject ? '尚未读取专区，请移出后重新添加' : !total.selected ? '尚未选择课程' : item.id === state.activeTaskId && ['running', 'preparing', 'waiting'].includes(state.status) ? '执行中' : total.deferred ? '有待处理课程' : item.skipped.length ? '有跳过课程待重试' : total.done === total.selected ? '全部完成' : '待学习';
-      view.summary.textContent = `所选 ${total.selected} · 完成 ${total.done} · 待处理 ${total.deferred} · 跳过 ${total.skipped} · ${status}`;
+      view.summary.textContent = `${item.selectionMode === 'specific' ? '指定课程' : '专区待学'} · 所选 ${total.selected} · 完成 ${total.done} · 待处理 ${total.deferred} · 跳过 ${total.skipped} · ${status}`;
       view.legacy.hidden = item.scope !== 'required'; view.refresh.dataset.legacyDisabled = String(!item.subject); updateCourses(view.courses, item.courses, item);
     }
   }
@@ -1214,7 +1324,7 @@ function createPanel(win, controller, version) {
     automatic.checked = state.automation?.enabled === true; resumeOnReload.checked = state.automation?.resumeOnReload === true;
     resumeOnReload.disabled ||= !automatic.checked;
     for (const control of problemActions.querySelectorAll('button')) control.disabled ||= adding;
-    const hasPending = state.tasks.some(item => item.subject && eligible(item).some(course => !item.done.includes(course.id) && !item.skipped.includes(course.id) && !item.deferred?.some(entry => entry.courseId === course.id)));
+    const hasPending = state.tasks.some(item => item.subject && eligible(item).some(course => !isDone(item, course.id) && !item.skipped.includes(course.id) && !item.deferred?.some(entry => entry.courseId === course.id)));
     const cannotStart = starting || state.unavailable || adding || Boolean(state.draft) || !hasPending;
     const hasStarted = Boolean(state.currentCourseId) || state.tasks.some(item => item.current || item.done.length || item.skipped.length || item.deferred?.length);
     startButton.disabled = running || cannotStart;
@@ -1232,7 +1342,7 @@ function createPanel(win, controller, version) {
 
 
 
-const wdMainVersion = "0.1.0-beta.7";
+const wdMainVersion = "0.1.0-beta.8";
 
 function wdMainBootstrap(win) {
   if (win.location.protocol !== 'https:' || win.location.hostname !== 'wangda.chinamobile.com' || win.top !== win.self) return;

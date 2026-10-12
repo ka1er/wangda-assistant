@@ -3,6 +3,9 @@ const wdAdapterSubjectPattern = new RegExp(`^#/study/subject/detail/(${wdAdapter
 const wdAdapterContextCoursePattern = new RegExp(`^#/study/course/detail/subject-course/(${wdAdapterIdPattern})/6/(${wdAdapterIdPattern})$`, 'u');
 const wdAdapterCoursePattern = new RegExp(`^#/study/course/detail/(${wdAdapterIdPattern})/(\\d+)$`, 'u');
 const wdAdapterErrorPattern = new RegExp(`^#/study/errors/(${wdAdapterIdPattern})&([0-9]+)$`, 'u');
+// Only the middle-page variants observed in the site's router and detail loaders.
+const wdAdapterSubjectRelearnPattern = new RegExp(`^#/study/subject-middle/(${wdAdapterIdPattern})/(1|9)$`, 'u');
+const wdAdapterCourseRelearnPattern = new RegExp(`^#/study/course-middle/(${wdAdapterIdPattern})/(1|2)$`, 'u');
 
 function wdAdapterText(element) {
   return (element?.textContent || '').trim();
@@ -32,6 +35,10 @@ function wdAdapterRoute(hash) {
   if (course) return { kind: 'course', route, subjectId: null, courseId: course[1] };
   const error = wdAdapterErrorPattern.exec(route);
   if (error) return { kind: 'study-error', route, subjectId: null, courseId: error[1], errorCode: error[2] };
+  const subjectRelearn = wdAdapterSubjectRelearnPattern.exec(route);
+  if (subjectRelearn) return { kind: 'subject-relearn', route, subjectId: subjectRelearn[1], courseId: null };
+  const courseRelearn = wdAdapterCourseRelearnPattern.exec(route);
+  if (courseRelearn) return { kind: 'course-relearn', route, subjectId: null, courseId: courseRelearn[1] };
   const kind = route === '#/search' ? 'search' : route === '#/login' ? 'login' : ['', '#/', '#/home'].includes(route) ? 'home' : 'unknown';
   return { kind, route, subjectId: null, courseId: null };
 }
@@ -61,8 +68,47 @@ function wdAdapterSafeSubjectLink(document, href) {
   }
 }
 
+function wdAdapterVisible(element) {
+  const win = element.ownerDocument.defaultView;
+  for (let current = element; current; current = current.parentElement) {
+    if (current.hidden || current.getAttribute('aria-hidden') === 'true' || current.classList.contains('hidden') || (current.tagName === 'DIALOG' && !current.hasAttribute('open'))) return false;
+    const style = win?.getComputedStyle(current);
+    if (style && (style.display === 'none' || ['hidden', 'collapse'].includes(style.visibility) || style.opacity === '0')) return false;
+  }
+  return element.isConnected;
+}
+
+function wdAdapterRelearn(document, page) {
+  const archived = ['subject-relearn', 'course-relearn'].includes(page.kind);
+  const kind = page.kind.startsWith('subject') ? 'subject' : page.kind.startsWith('course') ? 'course' : null;
+  if (!kind) return null;
+  const label = kind === 'subject' ? '专题' : '课程';
+  const prompt = `您已经很久没有学习该${label}了，是否重新学习？`;
+  const update = `（${label}内容可能更新，如有学习要求，建议重新学习）`;
+  const known = new Map([
+    [prompt, prompt], [prompt + update, prompt],
+    [`该${label}已完成，是否重新学习？`, `该${label}已完成，是否重新学习？`],
+    ...(archived ? [[`该${label}已完成`, `该${label}已完成`]] : []),
+  ]);
+  const candidates = archived ? [...document.querySelectorAll('.but-footer > .h3')] : [];
+  for (const dialog of document.querySelectorAll('[role="dialog"], dialog[open], .alertify-dialog')) {
+    candidates.push(dialog, ...dialog.querySelectorAll('.h3, p, .alertify-message'));
+  }
+  let message = '';
+  for (const element of candidates) {
+    const exact = known.get(wdAdapterText(element).replace(/\s+/gu, ''));
+    if (exact && wdAdapterVisible(element)) { message = exact; break; }
+  }
+  if (!archived && !message) return null;
+  // The observed #again handler calls subject-back/course-back before opening a new window.
+  // Reading the prompt must never invoke that handler or intercept native window.confirm.
+  return { kind, message, manualRequired: true, reason: archived
+    ? '重新学习会调用平台归档恢复接口并打开新窗口，请先在平台核对记录后人工处理。'
+    : '尚未验证此提示对应按钮的处理逻辑，请先在平台核对记录后人工处理。' };
+}
+
 export function readPage(document, hash) {
-  const page = { ...wdAdapterRoute(hash), title: '', courses: [], candidates: [], sections: [], activeSectionId: null, media: null, issues: [] };
+  const page = { ...wdAdapterRoute(hash), title: '', courses: [], candidates: [], sections: [], activeSectionId: null, media: null, relearn: null, issues: [] };
   if (page.kind === 'unknown') page.issues.push('无法识别当前页面路由');
   if (page.kind === 'subject') {
     page.title = wdAdapterTitle(document.querySelector('.subject-banner .title-row .h3, .banner-info .title-row .h3'));
@@ -146,6 +192,7 @@ export function readPage(document, hash) {
       page.candidates.push({ id, title: wdAdapterTitle(link), route });
     }
   }
+  page.relearn = wdAdapterRelearn(document, page);
   return page;
 }
 

@@ -4,6 +4,19 @@ const { normalizeQueue = () => assert.fail('v2队列尚未实现'), mergeCourses
 const courses = ['completed', 'learning', 'not-started', 'unknown'].map((status, i) => ({ id: `c${i}`, title: `课程${i}`, route: `#/study/course/detail/subject-course/c${i}/6/s`, required: false, status }));
 const legacy = () => ({ version: 1, taskId: 'old', revision: 3, config: { target: '专题', scope: 'required', window: { start: '10:00', end: '23:00' } }, subject: { id: 's', title: '专题', route: '#/study/subject/detail/s' }, courses: [{ ...courses[0], selected: true }], done: ['c0'], current: 'c0' });
 
+test('任务范围与复查意图兼容旧数据并严格保存合法值', () => {
+  const old=normalizeQueue(legacy()); assert.equal(old.tasks[0].selectionMode,'all-pending'); assert.deepEqual(old.tasks[0].recheck,[]);
+  old.tasks[0].selectionMode='specific'; old.tasks[0].recheck=['c0']; const next=normalizeQueue(old);
+  assert.equal(next.tasks[0].selectionMode,'specific'); assert.deepEqual(next.tasks[0].done,['c0']); assert.deepEqual(next.tasks[0].recheck,['c0']);
+  for(const patch of [{selectionMode:'auto'},{selectionMode:null},{recheck:['missing']},{recheck:['c0','c0']},{recheck:[1]}]){const bad=structuredClone(old);Object.assign(bad.tasks[0],patch);assert.throws(()=>normalizeQueue(bad));}
+});
+
+test('指定课程刷新只保留已有勾选，新出现待学课程不自动选中', () => {
+  const previous=mergeCourses([],courses.slice(0,2)); previous[0].selected=true;
+  const merged=mergeCourses(previous,courses,'specific'); assert.deepEqual(merged.map(c=>c.selected),[true,true,false,false]);
+  assert.deepEqual(mergeCourses(previous,courses,'all-pending').map(c=>c.selected),[true,true,true,false]);
+});
+
 test('旧任务不默认自动执行，自动设置和待处理原因独立保存且严格验证', () => {
   const input=normalizeQueue(legacy());
   assert.deepEqual(input.automation,{enabled:false,resumeOnReload:false}); assert.equal(input.runRequested,false); assert.deepEqual(input.tasks[0].deferred,[]);
