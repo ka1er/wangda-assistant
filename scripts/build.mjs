@@ -11,6 +11,8 @@ const wdBuildMetadata = `// ==UserScript==
 // @name         网大助手
 // @namespace    wangda-assistant
 // @version      ${wdBuildPackage.version}
+// @updateURL    https://raw.githubusercontent.com/ka1er/wangda-assistant/refs/heads/beta-channel/dist/wangda-assistant.user.js
+// @downloadURL  https://raw.githubusercontent.com/ka1er/wangda-assistant/refs/heads/beta-channel/dist/wangda-assistant.user.js
 // @description  手动勾选课程、管理多专区任务队列，按平台完成状态连续学习
 // @match        https://wangda.chinamobile.com/*
 // @run-at       document-idle
