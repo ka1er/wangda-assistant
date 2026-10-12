@@ -10,11 +10,12 @@ export function createPanel(win, controller, version) {
   element('style', ':host{all:initial;color:#17344d;font:13px/1.5 system-ui,"Microsoft YaHei",sans-serif}*{box-sizing:border-box}[hidden]{display:none!important}button,input{font:inherit}button{cursor:pointer;border:1px solid #a8c6e6;background:#f5faff;border-radius:5px;padding:5px 9px;color:#155a9b}button:hover{background:#e6f2ff}button:disabled{opacity:.5;cursor:default}button.primary{background:#176ac2;color:#fff;border-color:#176ac2}section{width:380px;max-width:calc(100vw - 32px);background:#fff;border:1px solid #a9c5e1;border-radius:10px;box-shadow:0 5px 28px #12345630;overflow:hidden}header{padding:10px 12px;background:#edf5ff}header strong{font-size:15px}.headline,.buttons,.row{display:flex;align-items:center;gap:7px}.headline{justify-content:space-between}.buttons{flex-wrap:wrap;margin:9px 0}.row{align-items:flex-start}.row label{flex:1;min-width:0}small,.muted{font-size:12px;color:#56748f}.progress{margin-top:7px;font-size:12px}.body{padding:12px;max-height:calc(100dvh - 155px);overflow-y:auto;overscroll-behavior:contain}.status,.problem{padding:9px;background:#eff6fd;white-space:pre-wrap;overflow-wrap:anywhere;border-radius:5px;margin-bottom:10px}.problem{background:#fff6e8;border:1px solid #edc88d}h2{font-size:14px;margin:10px 0}p{margin:6px 0;overflow-wrap:anywhere}label{display:block;margin-bottom:8px}input[type=text]{width:100%;border:1px solid #b8c9d9;border-radius:4px;background:#fff;color:#17344d;padding:6px}input[type=checkbox]{margin:3px 0;flex-shrink:0}input:focus-visible,button:focus-visible,summary:focus-visible{outline:2px solid #176ac2;outline-offset:2px}article{border:1px solid #d2e1ef;border-radius:6px;padding:10px;margin:8px 0}article h3{font-size:13px;margin:0 0 5px;overflow-wrap:anywhere}.course{display:flex;align-items:flex-start;gap:7px;margin:0;padding:7px 0;border-bottom:1px solid #edf2f7}.course:last-child{border-bottom:0}.course span{flex:1;overflow-wrap:anywhere}.course small{display:block}.course button{font-size:12px;padding:2px 5px}details{margin:8px 0}summary{cursor:pointer;color:#155a9b}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:11px/1.5 monospace;margin:6px 0}.candidate{width:100%;text-align:left;overflow-wrap:anywhere;margin:4px 0}.separator{border-top:1px solid #e2ebf3;margin-top:12px;padding-top:3px}');
   const shell = element('section'); shell.setAttribute('aria-label', '网大助手');
   element('style', 'section{display:flex;flex-direction:column;max-height:calc(100dvh - 32px)}header{flex-shrink:0}.body{min-height:0}');
+  element('style', '.task-head{display:flex;align-items:flex-start;gap:7px}.task-head h3{flex:1;min-width:0}.sort-actions{display:flex;gap:4px;flex-shrink:0}.sort-actions button{padding:2px 5px;font-size:12px}.sort-handle{cursor:grab}.sort-handle:active{cursor:grabbing}article[data-drop=before]{border-top:3px solid #176ac2}article[data-drop=after]{border-bottom:3px solid #176ac2}article[data-dragging]{opacity:.6}');
   const header = element('header', '', shell);
   const headline = element('div', '', header); headline.className = 'headline';
   const title = element('div', '', headline); element('strong', '网大助手', title); element('small', ` ${version}`, title);
   const headerButtons = element('div', '', headline); headerButtons.className = 'row';
-  const busy = new Set(); const editors = new Set(); let adding = false; let starting = false; let latest = controller.getState();
+  const busy = new Set(); const editors = new Set(); let adding = false; let starting = false; let reordering = false; let draggedTaskId = null; let latest = controller.getState();
   const button = (action, text, parent, handler, edit = true) => {
     const node = element('button', text, parent); node.type = 'button'; node.dataset.action = action;
     if (edit) editors.add(node);
@@ -41,6 +42,7 @@ export function createPanel(win, controller, version) {
   const queueView = element('div', '', body); queueView.dataset.view = 'queue';
   const queueHeading = element('div', '', queueView); queueHeading.className = 'headline'; element('h2', '任务队列', queueHeading);
   button('add', '添加专区', queueHeading, () => { adding = true; render(controller.getState()); target.focus(); });
+  element('p', '拖动 ↕ 调整先后；当前课程继续，下一门按新顺序执行。', queueView).className = 'muted';
   const empty = element('p', '还没有任务，点击“添加专区”开始。', queueView); empty.className = 'muted';
   const taskList = element('div', '', queueView);
   const queueControls = element('div', '', queueView); queueControls.className = 'buttons';
@@ -100,6 +102,17 @@ export function createPanel(win, controller, version) {
     try { if (await saveWindow()) await controller.start(); }
     finally { starting = false; render(controller.getState()); }
   };
+  const canSort = () => !reordering && !starting && !latest.unavailable && latest.status !== 'preparing' && latest.phase !== 'resuming';
+  const moveDisplayedTask = async (id, index) => {
+    if (!canSort()) return;
+    reordering = true; render(controller.getState());
+    try { if (!await controller.moveTask(id, index)) diagnostic.textContent = '顺序未保存，请查看当前提示后重试。'; }
+    finally { reordering = false; render(controller.getState()); }
+  };
+  const clearDrag = () => {
+    draggedTaskId = null;
+    for (const node of taskList.children) { delete node.dataset.drop; delete node.dataset.dragging; }
+  };
   function createCourseList(parent, taskId = null) {
     const controls = element('div', '', parent); controls.className = 'buttons';
     for (const [mode, caption] of [['unfinished', '全部未完成'], ['required', '仅必修'], ['none', '清空选择']]) button(`select-${mode}-${taskId || 'draft'}`, caption, controls, () => controller.selectCourses(taskId, mode));
@@ -143,10 +156,38 @@ export function createPanel(win, controller, version) {
   function updateTasks(state) {
     const ids = new Set(state.tasks.map(task => task.id));
     for (const [id, view] of taskNodes) if (!ids.has(id)) { for (const control of view.article.querySelectorAll('button,input')) editors.delete(control); view.article.remove(); taskNodes.delete(id); }
-    for (const item of state.tasks) {
+    for (const [index, item] of state.tasks.entries()) {
       let view = taskNodes.get(item.id);
       if (!view) {
-        const article = element('article', '', taskList); const title = element('h3', '', article);
+        const article = element('article', '', taskList); article.dataset.taskId = item.id;
+        const heading = element('div', '', article); heading.className = 'task-head'; const title = element('h3', '', heading);
+        const sorting = element('div', '', heading); sorting.className = 'sort-actions';
+        const handle = element('button', '↕', sorting); handle.type = 'button'; handle.className = 'sort-handle'; handle.dataset.dragTask = item.id; handle.title = '拖动调整专区顺序';
+        const up = button(`move-up-${item.id}`, '上移', sorting, () => moveDisplayedTask(item.id, latest.tasks.findIndex(task => task.id === item.id) - 1), false);
+        const down = button(`move-down-${item.id}`, '下移', sorting, () => moveDisplayedTask(item.id, latest.tasks.findIndex(task => task.id === item.id) + 1), false);
+        handle.addEventListener('dragstart', event => {
+          if (!canSort()) { event.preventDefault(); return; }
+          clearDrag(); draggedTaskId = item.id; article.dataset.dragging = '';
+          if (event.dataTransfer) { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', item.id); }
+        });
+        handle.addEventListener('dragend', clearDrag);
+        const after = event => { const box = article.getBoundingClientRect(); return event.clientY >= box.top + box.height / 2; };
+        article.addEventListener('dragover', event => {
+          if (!draggedTaskId || !canSort()) return;
+          event.preventDefault(); for (const node of taskList.children) delete node.dataset.drop;
+          if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+          if (draggedTaskId !== item.id) article.dataset.drop = after(event) ? 'after' : 'before';
+        });
+        article.addEventListener('dragleave', event => { if (!article.contains(event.relatedTarget)) delete article.dataset.drop; });
+        article.addEventListener('drop', async event => {
+          if (!draggedTaskId || !canSort()) return;
+          event.preventDefault(); const id = draggedTaskId;
+          const from = latest.tasks.findIndex(task => task.id === id), target = latest.tasks.findIndex(task => task.id === item.id);
+          const insertion = target + Number(after(event)); clearDrag();
+          if (from < 0 || target < 0 || id === item.id) return;
+          try { await moveDisplayedTask(id, insertion - Number(from < insertion)); }
+          catch { diagnostic.textContent = '顺序未保存，请查看当前提示后重试。'; }
+        });
         const summary = element('p', '', article); summary.dataset.taskSummary = item.id;
         const detailButton = button(`detail-${item.id}`, '查看详情', article, () => { detail.hidden = !detail.hidden; detailButton.textContent = detail.hidden ? '查看详情' : '收起详情'; detailButton.setAttribute('aria-expanded', String(!detail.hidden)); }, false); detailButton.setAttribute('aria-expanded', 'false');
         const detail = element('div', '', article); detail.dataset.taskDetail = item.id; detail.hidden = true;
@@ -154,9 +195,13 @@ export function createPanel(win, controller, version) {
         const courses = createCourseList(detail, item.id); const actions = element('div', '', detail); actions.className = 'buttons';
         const refresh = button(`refresh-${item.id}`, '更新清单', actions, () => controller.refreshTask(item.id));
         button(`remove-${item.id}`, '移出队列', actions, () => controller.removeTask(item.id));
-        view = { article, title, summary, detail, legacy, courses, refresh }; taskNodes.set(item.id, view);
+        view = { article, title, summary, detail, legacy, courses, refresh, handle, up, down }; taskNodes.set(item.id, view);
       }
-      view.title.textContent = item.subject?.title || item.target;
+      view.title.textContent = `${index + 1}. ${item.subject?.title || item.target}`;
+      view.handle.setAttribute('aria-label', `拖动排序：${item.subject?.title || item.target}`);
+      view.handle.disabled = !canSort() || state.tasks.length < 2; view.handle.draggable = !view.handle.disabled;
+      view.up.disabled = !canSort() || index === 0; view.down.disabled = !canSort() || index === state.tasks.length - 1;
+      if (taskList.children[index] !== view.article) taskList.insertBefore(view.article, taskList.children[index] || null);
       const total = counts(item);
       const status = !item.subject ? '尚未读取专区，请移出后重新添加' : !total.selected ? '尚未选择课程' : item.id === state.activeTaskId && ['running', 'preparing', 'waiting'].includes(state.status) ? '执行中' : total.deferred ? '有待处理课程' : item.skipped.length ? '有跳过课程待重试' : total.done === total.selected ? '全部完成' : '待学习';
       view.summary.textContent = `所选 ${total.selected} · 完成 ${total.done} · 待处理 ${total.deferred} · 跳过 ${total.skipped} · ${status}`;

@@ -13,12 +13,38 @@ function fixture(overrides = {}) {
   const controller = { getState: () => structuredClone(state), subscribe: fn => { listener = fn; return () => {}; } };
   for (const name of ['search', 'chooseCandidate', 'collectDraft', 'setSelection', 'refreshTask', 'removeTask', 'setWindow', 'start', 'pause', 'retry', 'skipCurrent', 'draftSetSelection', 'discardDraft', 'selectCourses', 'setAutomation']) controller[name] = async (...args) => { calls.push([name, ...args]); if (name === 'setWindow') emit({ window: args[0] }); if (name === 'setAutomation') emit({automation:args[0]}); return true; };
   controller.addDraft = async () => { calls.push(['addDraft']); emit({ tasks: [...state.tasks, task()], draft: null, candidates: [] }); return true; };
+  controller.moveTask = async (id, index) => { calls.push(['moveTask',id,index]); const tasks=[...state.tasks]; tasks.splice(index,0,...tasks.splice(tasks.findIndex(t=>t.id===id),1)); emit({tasks}); return true; };
   controller.diagnose = () => { calls.push(['diagnose']); return { kind: 'home', courses: 0 }; };
   const panel = createPanel(dom.window, controller, 'test-version'); const root = dom.window.document.getElementById('wangda-assistant').shadowRoot;
   const click = async action => { const node = root.querySelector(`[data-action="${action}"]`); assert.ok(node, `缺少${action}按钮`); node.click(); for (let i = 0; i < 30; i++) await Promise.resolve(); };
   const close = () => { panel.destroy(); dom.window.close(); };
   return { dom, state, calls, emit, root, click, close, panel };
 }
+
+test('运行中可上移下移，DOM顺序同步且详情保持，首尾禁用', async () => {
+  const f=fixture({tasks:[task('a'),task('b'),task('c')],status:'running',activeTaskId:'a'}); f.panel.open();
+  const order=()=>[...f.root.querySelectorAll('article')].map(n=>n.dataset.taskId);
+  assert.deepEqual(order(),['a','b','c']); await f.click('detail-b'); const detail=f.root.querySelector('[data-task-detail="b"]');
+  assert.equal(f.root.querySelector('[data-action="move-up-a"]').disabled,true); assert.equal(f.root.querySelector('[data-action="move-down-c"]').disabled,true);
+  await f.click('move-up-b'); assert.deepEqual(f.calls.at(-1),['moveTask','b',0]); assert.deepEqual(order(),['b','a','c']); assert.equal(detail.hidden,false); assert.equal(detail,f.root.querySelector('[data-task-detail="b"]'));
+  await f.click('move-down-b'); assert.deepEqual(order(),['a','b','c']); assert.equal(f.calls.some(c=>c[0]==='pause'),false);
+  for(const state of [{status:'waiting'}, {status:'running',phase:'retrying'}, {status:'running',phase:'offline'}]){f.emit(state); assert.equal(f.root.querySelector('[data-action="move-up-b"]').disabled,false);}
+  for(const state of [{status:'preparing'}, {status:'paused',phase:'resuming'}, {status:'paused',phase:null,unavailable:true}]){f.emit(state); assert.equal(f.root.querySelector('[data-action="move-up-b"]').disabled,true);}
+  f.close();
+});
+
+test('只接受面板手柄拖动，支持落在卡片上下方，拖动结束清理提示', async () => {
+  const f=fixture({tasks:[task('a'),task('b'),task('c')],status:'running'}); f.panel.open();
+  const card=id=>f.root.querySelector(`[data-task-id="${id}"]`); const handle=id=>f.root.querySelector(`[data-drag-task="${id}"]`);
+  const drag=(node,type,y=1)=>{const e=new f.dom.window.MouseEvent(type,{bubbles:true,cancelable:true,clientY:y}); Object.defineProperty(e,'dataTransfer',{value:{setData(){}}}); node.dispatchEvent(e); return e;};
+  assert.ok(handle('c')); card('a').getBoundingClientRect=()=>({top:0,height:20});
+  drag(card('a'),'drop'); assert.equal(f.calls.length,0);
+  drag(handle('c'),'dragstart'); const over=drag(card('a'),'dragover'); assert.equal(over.defaultPrevented,true); assert.equal(card('a').dataset.drop,'before'); drag(card('a'),'drop'); for(let i=0;i<30;i++)await Promise.resolve();
+  assert.deepEqual(f.calls.at(-1),['moveTask','c',0]); assert.deepEqual([...f.root.querySelectorAll('article')].map(n=>n.dataset.taskId),['c','a','b']); assert.equal(f.root.querySelector('[data-drop]'),null);
+  card('b').getBoundingClientRect=()=>({top:0,height:20}); drag(handle('c'),'dragstart'); drag(card('b'),'drop',19); for(let i=0;i<30;i++)await Promise.resolve(); assert.deepEqual(f.calls.at(-1),['moveTask','c',2]);
+  drag(handle('b'),'dragstart'); drag(card('a'),'dragover'); drag(handle('b'),'dragend'); assert.equal(f.root.querySelector('[data-drop]'),null);
+  const count=f.calls.length; drag(card('a'),'drop'); assert.equal(f.calls.length,count); f.close();
+});
 
 test('首页仅队列，添加搜索候选和草稿分阶段展示，加入后回队列', async () => {
   const f = fixture(); f.panel.open();

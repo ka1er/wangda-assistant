@@ -26,6 +26,56 @@ export function course(sections, extra = {}) { return { kind: 'course', subjectI
 export function section(id = 'v', type = 5, status = 'learning', active = true) { return { id, courseId: 'c', type, status, active, required: true }; }
 export async function elapse(f, duration) { for (let remaining = duration; remaining > 0; remaining -= 1000) { f.advance(Math.min(remaining, 1000)); await f.c.tick(); } }
 
+async function twoOrderedTasks(f) {
+  f.page({courses:[...f.page().courses,{id:'d',title:'原专区剩余课程',required:true,status:'learning',route:'#/study/course/detail/subject-course/d/6/s'}]});
+  await ready(f);
+  f.page({kind:'subject',subjectId:'s2',title:'另一个专区',route:'#/study/subject/detail/s2',courses:[{id:'z',title:'另一课程',required:true,status:'learning',route:'#/study/course/detail/subject-course/z/6/s2'}]});
+  await f.c.collectDraft(); await f.c.addDraft(); f.actions.length=0; return f;
+}
+
+test('专区排序保存并恢复，任务内容和当前标识保持原样，非法位置不写入', async () => {
+  const f=await twoOrderedTasks(fixture()); const before=f.c.getState(); const [a,b]=before.tasks;
+  assert.equal(typeof f.c.moveTask,'function'); assert.equal(await f.c.moveTask(b.id,0),true);
+  assert.deepEqual(f.c.getState().tasks,[b,a]); assert.equal(f.c.getState().activeTaskId,before.activeTaskId); assert.equal(f.c.getState().status,'paused'); assert.deepEqual(f.actions,[]);
+  const restored=fixture(f.shared); assert.deepEqual(restored.c.getState().tasks,[b,a]); restored.c.destroy();
+  const revision=f.shared['wangda-assistant.task'].revision;
+  for(const [id,index] of [[a.id,-1],[a.id,2],[a.id,0.5],['missing',0],[a.id,'0']])assert.equal(await f.c.moveTask(id,index),false);
+  assert.equal(await f.c.moveTask(b.id,0),true); assert.equal(f.shared['wangda-assistant.task'].revision,revision); f.c.destroy();
+});
+
+test('运行时重排不暂停和切页，当前课程完成后按新顺序进入下一专区', async () => {
+  const f=await twoOrderedTasks(fixture()); const [a,b]=f.c.getState().tasks; await f.c.start(); await f.c.tick();
+  f.page(course([section('doc',1,'learning')])); await f.c.tick(); const before=f.c.getState(); const actions=[...f.actions];
+  assert.equal(typeof f.c.moveTask,'function'); assert.equal(await f.c.moveTask(b.id,0),true);
+  const after=f.c.getState(); assert.equal(after.status,'running'); assert.equal(after.activeTaskId,a.id); assert.equal(after.currentCourseId,'c'); assert.equal(after.currentSectionTitle,before.currentSectionTitle); assert.deepEqual(f.actions,actions); assert.equal(f.shared.locked,true);
+  f.page(course([section('doc',1,'completed')])); await f.c.tick(); await elapse(f,6000);
+  assert.equal(f.c.getState().activeTaskId,b.id); assert.deepEqual(f.actions.at(-1),['course','z']); assert.deepEqual(f.c.getState().tasks[1].done,['c']);
+  f.page(course([section('z-doc',1,'completed')],{subjectId:'s2',courseId:'z',route:'#/study/course/detail/subject-course/z/6/s2',sections:[{...section('z-doc',1,'completed'),courseId:'z'}]})); await f.c.tick(); await elapse(f,6000);
+  assert.equal(f.c.getState().activeTaskId,a.id); assert.deepEqual(f.actions.at(-1),['course','d']); f.c.destroy();
+});
+
+test('排序遵守准备状态和外来版本检查，不能覆盖另一标签的新队列', async () => {
+  const f=await twoOrderedTasks(fixture()); const [a,b]=f.c.getState().tasks; assert.equal(typeof f.c.moveTask,'function');
+  await f.c.search('测试'); const stored=structuredClone(f.shared['wangda-assistant.task']); assert.equal(await f.c.moveTask(b.id,0),false); assert.deepEqual(f.shared['wangda-assistant.task'],stored); await f.c.pause();
+  await f.c.start(); f.shared['wangda-assistant.task'].revision+=1; const foreign=structuredClone(f.shared['wangda-assistant.task']);
+  assert.equal(await f.c.moveTask(b.id,0),false); assert.deepEqual(f.shared['wangda-assistant.task'],foreign); assert.equal(f.c.getState().status,'paused'); assert.deepEqual(f.c.getState().tasks.map(t=>t.id),[a.id,b.id]); f.c.destroy();
+});
+
+test('完成后原生抢先切原专区紧邻下一门，停止该页媒体并按新排序进入优先专区', async () => {
+  const f=await twoOrderedTasks(fixture()); const [,b]=f.c.getState().tasks; await f.c.start(); await f.c.tick(); f.page(course([section('doc',1,'learning')])); await f.c.tick(); await f.c.moveTask(b.id,0);
+  f.page(course([section('doc',1,'completed')])); await f.c.tick(); assert.deepEqual(f.c.getState().tasks[1].done,['c']);
+  f.page(course([{...section('doc',1),courseId:'d'}],{courseId:'d',route:'#/study/course/detail/subject-course/d/6/s'})); f.actions.length=0; await f.c.tick();
+  assert.equal(f.c.getState().status,'running'); assert.equal(f.c.getState().activeTaskId,b.id); assert.deepEqual(f.actions,['pause',['course','z']]); assert.deepEqual(f.c.getState().tasks[1].done,['c']); f.c.destroy();
+});
+
+test('未确认完成或完成后无关页面仍暂停，不借排序接管其他课程', async () => {
+  for(const [complete,id,sid] of [[false,'d','s'],[true,'d','other'],[true,'unknown','s']]) {
+    const f=await twoOrderedTasks(fixture()); const [,b]=f.c.getState().tasks; await f.c.start(); await f.c.tick(); f.page(course([section('doc',1,complete?'completed':'learning')])); await f.c.tick(); await f.c.moveTask(b.id,0);
+    f.page(course([{...section('doc',1),courseId:id}],{courseId:id,subjectId:sid,route:`#/study/course/detail/subject-course/${id}/6/${sid}`})); f.actions.length=0; await f.c.tick();
+    assert.equal(f.c.getState().status,'paused'); assert.match(f.c.getState().message,/页面已离开目标课程/u); assert.deepEqual(f.actions,[]); f.c.destroy();
+  }
+});
+
 test('专题课程已加载但标题缺失或不匹配时，诊断和超时明确原因且不写任务', async () => {
   for (const title of ['', '其他专题']) {
     const f = fixture(); await f.c.search('新专题'); await f.c.tick();

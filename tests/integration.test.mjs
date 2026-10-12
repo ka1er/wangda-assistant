@@ -38,6 +38,16 @@ function setup() {
   subject(); return { w, c, a, subject, search, course, complete, elapse, collect, panel, root, click, change, add, close };
 }
 
+test('播放期间拖动专区，当前课节保持，下一门进入新优先专区再返回原专区', async () => {
+  const f=setup(); f.panel.open(); await f.add('s',[['a','学习中',true],['b','未开始',true]]); await f.click('add-draft'); await f.add('s2',[['z','学习中',false]]); await f.click('add-draft');
+  const [a,b]=f.c.getState().tasks; await f.click('start'); await f.c.tick(); f.course('a',true); let pauses=0; f.w.document.querySelector('video').pause=()=>{pauses++;}; await f.c.tick();
+  const route=f.w.location.hash; const target=f.root.querySelector(`[data-task-id="${a.id}"]`); const handle=f.root.querySelector(`[data-drag-task="${b.id}"]`); assert.ok(target); assert.ok(handle); target.getBoundingClientRect=()=>({top:0,height:20});
+  handle.dispatchEvent(new f.w.Event('dragstart',{bubbles:true,cancelable:true})); target.dispatchEvent(new f.w.MouseEvent('drop',{bubbles:true,cancelable:true,clientY:1})); for(let i=0;i<40;i++)await Promise.resolve();
+  assert.equal(f.w.location.hash,route); assert.equal(pauses,0); assert.equal(f.c.getState().status,'running'); assert.equal(f.a.read().activeSectionId,'v'); assert.deepEqual(f.c.getState().tasks.map(t=>t.id),[b.id,a.id]);
+  f.complete('v'); await f.c.tick(); await f.elapse(6000); assert.equal(f.a.read().activeSectionId,'doc'); f.complete('doc'); await f.c.tick(); await f.elapse(6000); assert.match(f.w.location.hash,/subject-course\/z\/6\/s2$/u);
+  f.course('z'); f.complete('doc'); await f.c.tick(); await f.elapse(6000); assert.match(f.w.location.hash,/subject-course\/b\/6\/s$/u); assert.deepEqual(f.c.getState().tasks.find(t=>t.id===a.id).done,['a']); f.close();
+});
+
 test('搜索点选无标准横幅的自定义专区后显示25门草稿，保留已有任务且核对标签标题', async () => {
   const f = setup(); await f.collect(); const existing = f.c.getState().tasks[0]; f.panel.open();
   await f.click('add'); f.root.querySelector('[name="target"]').value = '示例专区'; await f.click('search');

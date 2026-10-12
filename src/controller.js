@@ -210,6 +210,18 @@ export function createController(options) {
     if (problem?.taskId === taskId) problem = null;
     return persist();
   });
+  const moveTask = async (taskId, index) => {
+    if (destroyed || blocked || restorePending || status === 'preparing') return false;
+    const move = () => {
+      const from = record?.tasks.findIndex(item => item.id === taskId) ?? -1;
+      if (from < 0 || !Number.isInteger(index) || index < 0 || index >= record.tasks.length) return false;
+      if (from === index) return true;
+      const [item] = record.tasks.splice(from, 1); record.tasks.splice(index, 0, item);
+      return persist();
+    };
+    if (['running', 'waiting'].includes(status)) return held && verify() ? move() : false;
+    return edit(move);
+  };
   const setWindow = async window => {
     if (!validWindow(window)) return tell('请填写合法北京时间（结束时间可填24:00）。');
     return edit(() => { ensureRecord(); record.window = { start: window.start, end: window.end }; return persist(); });
@@ -448,6 +460,11 @@ export function createController(options) {
         const entry = nextEntry();
         const next = entry?.course;
         if (task.done.includes(current.id) && next && page.subjectId === entry.item.subject?.id && page.courseId === next.id && page.route === next.route) { nextCourse(page); return; }
+        const nativeNext = task.courses[task.courses.findIndex(course => course.id === current.id) + 1];
+        if (task.done.includes(current.id) && grace?.key === `course:${current.id}` && next && nativeNext && matchesCourse(page, nativeNext)) {
+          // The site advanced within the just-completed course's subject before applying the new queue order.
+          adapter.pauseMedia(); nextCourse(page); return;
+        }
         stop('页面已离开目标课程，请确认后重新开始。'); return;
       }
       if (task.done.includes(current.id)) {
@@ -527,7 +544,7 @@ export function createController(options) {
   if (!blocked && record?.automation.enabled && record.automation.resumeOnReload && record.runRequested) { restorePending = true; message = '正在准备恢复上次开始的队列。'; watch(); }
   return {
     getState, subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
-    search, chooseCandidate, collectDraft, draftSetSelection, selectCourses, addDraft, discardDraft, setSelection, refreshTask, removeTask, setWindow, setAutomation,
+    search, chooseCandidate, collectDraft, draftSetSelection, selectCourses, addDraft, discardDraft, setSelection, refreshTask, removeTask, moveTask, setWindow, setAutomation,
     start, pause, retry, skipCurrent, tick,
     diagnose() {
       const diagnostic = adapter.diagnose();
