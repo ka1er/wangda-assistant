@@ -10,6 +10,7 @@
 
 - 本轮功能版本：`0.1.0-beta.10`，功能分支 `beta/0.1.0-beta.10`，固定测试分支 `beta-channel`，入口 `dist/wangda-assistant.user.js`。
 - beta.10 功能提交 `3a66b1798c4549b0df6eb15c41c5da282b43409d` 已通过检查，发布目标为 `beta/0.1.0-beta.10` 与固定 `beta-channel`。2026-10-13 首次上传曾遇 Git HTTPS TLS/EOF 中断；使用同一现有代理的 SOCKS 协议后恢复 Git 连接，仅在本次 Git 命令指定协议，不更改或关闭用户全局代理设置。以远端提交和已检查的本地文件树核对分发内容。
+- **2026-10-13 已完成 beta.10 发布核验。** 版本分支和固定通道均已更新，固定脚本地址返回 HTTP 200，版本为 beta.10，全文与本地已检查构建一致。上传前重新运行 `npm run check`，219/219 通过；默认分支仍为 beta.5，未创建稳定版或正式 Release。
 - 独立诊断脚本：`0.1.0-test.1`，入口 `dist/wangda-playback-diagnostics.user.js`。
 - GitHub 仓库：`ka1er/wangda-assistant`，公开；默认分支为 `beta/0.1.0-beta.5`。
 - 当前仍为测试版。没有稳定版 `main` 或正式 Release；固定测试更新通道已建立，后续实验继续使用 `beta/版本号` 或 feature 分支，通过检查后再发布到 `beta-channel`，不得将未检查提交直接推入该通道。
