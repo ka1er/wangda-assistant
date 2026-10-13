@@ -26,6 +26,13 @@ export function course(sections, extra = {}) { return { kind: 'course', subjectI
 export function section(id = 'v', type = 5, status = 'learning', active = true) { return { id, courseId: 'c', type, status, active, required: true }; }
 export async function elapse(f, duration) { for (let remaining = duration; remaining > 0; remaining -= 1000) { f.advance(Math.min(remaining, 1000)); await f.c.tick(); } }
 
+test('静音偏好独立保存，关闭时开始与播放不静音，切换自动重试设置不重置偏好', async () => {
+  const f=await ready(fixture());const muted=[],plays=[];f.adapter.muteCurrentMedia=(...args)=>muted.push(args);f.adapter.playCurrentMedia=async mute=>{plays.push(mute);return true;};
+  await f.c.setAutomation({enabled:false,resumeOnReload:false,mute:false});assert.equal(f.c.getState().automation.mute,false);f.page(course([section()],{media:{paused:true,ended:false}}));await f.c.start();await f.c.tick();assert.equal(muted.length,0);assert.deepEqual(plays,[false]);await f.c.pause();
+  const restored=fixture(f.shared);assert.equal(restored.c.getState().automation.mute,false);restored.c.destroy();await f.c.setAutomation({enabled:true,resumeOnReload:false});assert.equal(f.c.getState().automation.mute,false);
+  await f.c.setAutomation({enabled:false,resumeOnReload:false,mute:true});await f.c.start();assert.equal(muted.length,1);f.c.destroy();
+});
+
 test('开始立即尝试目标静音，运行轮询继续应用，暂停和离开后不操作', async () => {
   const f=await ready(fixture());const muted=[];f.adapter.muteCurrentMedia=(target,run)=>{muted.push([target.id,target.route,run]);return true;};f.page(course([section()],{media:{paused:false,ended:false}}));
   await f.c.start();assert.equal(muted.length,1);assert.equal(muted[0][0],'c');assert.ok(muted[0][2]);await f.c.tick();assert.equal(muted.length,2);assert.equal(muted[1][2],muted[0][2]);

@@ -19,11 +19,12 @@ test('指定课程刷新只保留已有勾选，新出现待学课程不自动�
 
 test('旧任务不默认自动执行，自动设置和待处理原因独立保存且严格验证', () => {
   const input=normalizeQueue(legacy());
-  assert.deepEqual(input.automation,{enabled:false,resumeOnReload:false}); assert.equal(input.runRequested,false); assert.deepEqual(input.tasks[0].deferred,[]);
+  assert.deepEqual(input.automation,{enabled:false,resumeOnReload:false,mute:true}); assert.equal(input.runRequested,false); assert.deepEqual(input.tasks[0].deferred,[]);
   input.tasks[0].done=[]; input.tasks[0].deferred=[{courseId:'c0',reason:'需答题',cookie:'secret'}]; input.automation={enabled:true,resumeOnReload:true,extra:'secret'}; input.runRequested=true;
   const output=normalizeQueue(input); assert.deepEqual(output.tasks[0].deferred,[{courseId:'c0',reason:'需答题'}]); assert.equal(output.automation.extra,undefined);
   for (const patch of [{courseId:'missing',reason:'错误'},{courseId:'c0',reason:42}]) { const bad=structuredClone(input); bad.tasks[0].deferred=[patch]; assert.throws(()=>normalizeQueue(bad)); }
   const bad=structuredClone(input); bad.automation.enabled='true'; assert.throws(()=>normalizeQueue(bad));
+  input.automation.mute=false;assert.equal(normalizeQueue(input).automation.mute,false);for(const value of ['false',null,0]){input.automation.mute=value;assert.throws(()=>normalizeQueue(input));}
 });
 test('卡片完成/未知默认不选，学习中和未开始含选修默认选择', () => {
   assert.deepEqual(mergeCourses([], courses).map(x => x.selected), [false, true, true, false]);

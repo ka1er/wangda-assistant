@@ -302,6 +302,11 @@ test('无原生媒体或非课程页不能尝试播放', async () => {
   assert.equal(await createAdapter(dom('<video></video>', '#/home').window).playCurrentMedia(), false);
 });
 
+test('关闭自动静音时播放保留原声音设置，不强制静音或开声', async () => {
+  const {window}=dom('<video></video>');const media=window.document.querySelector('video');const a=createAdapter(window);media.volume=.7;
+  for(const muted of [false,true]){media.muted=muted;media.play=async()=>{assert.equal(media.muted,muted);};assert.equal(await a.playCurrentMedia(false),true);assert.equal(media.muted,muted);assert.equal(media.volume,.7);}window.close();
+});
+
 test('诊断只返回计数与问题，不包含标题或业务ID', () => {
   const adapter = createAdapter(dom(chapters(section('sensitive-id', { status: '已完成', type: 6 }))).window);
   const diagnostic = adapter.diagnose();

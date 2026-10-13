@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         网大助手
 // @namespace    wangda-assistant
-// @version      0.1.0-beta.11
+// @version      0.1.0-beta.12
 // @updateURL    https://raw.githubusercontent.com/ka1er/wangda-assistant/refs/heads/beta-channel/dist/wangda-assistant.user.js
 // @downloadURL  https://raw.githubusercontent.com/ka1er/wangda-assistant/refs/heads/beta-channel/dist/wangda-assistant.user.js
 // @description  手动勾选课程、管理多专区任务队列，按平台完成状态连续学习
@@ -414,11 +414,11 @@ function createAdapter(win) {
       if (!navigate(subjectRoute, 'subject')) navigate('#/home', 'home');
       return true;
     },
-    async playCurrentMedia() {
+    async playCurrentMedia(mute = true) {
       if (read().kind !== 'course') return false;
       const media = [...win.document.querySelectorAll('video,audio')].find(item => item.paused && !item.ended);
       if (!media) return false;
-      try { media.muted = true; await media.play(); return true; } catch { return false; }
+      try { if (mute) media.muted = true; await media.play(); return true; } catch { return false; }
     },
     diagnose() {
       const page = read();
@@ -469,10 +469,11 @@ function normalizeQueue(value) {
   }
   if (value.version !== 2 || !validWindow(value.window) || !Array.isArray(value.tasks) || !value.tasks.every(task => wdQueueTask(task)) || new Set(value.tasks.map(task => task.id)).size !== value.tasks.length || new Set(value.tasks.filter(task => task.subject).map(task => task.subject.id)).size !== value.tasks.filter(task => task.subject).length || !(value.activeTaskId === null || value.tasks.some(task => task.id === value.activeTaskId))) return error();
   if (value.automation !== undefined && (!value.automation || typeof value.automation.enabled !== 'boolean' || typeof value.automation.resumeOnReload !== 'boolean')) return error();
+  if (value.automation?.mute !== undefined && typeof value.automation.mute !== 'boolean') return error();
   if (value.runRequested !== undefined && typeof value.runRequested !== 'boolean') return error();
   // Only the public queue schema is persisted; transient state and unrelated keys are excluded.
   return { version: 2, taskId: value.taskId, revision: value.revision, window: { start: value.window.start, end: value.window.end }, activeTaskId: value.activeTaskId,
-    automation: { enabled: value.automation?.enabled === true, resumeOnReload: value.automation?.resumeOnReload === true }, runRequested: value.automation?.enabled === true && value.runRequested === true,
+    automation: { enabled: value.automation?.enabled === true, resumeOnReload: value.automation?.resumeOnReload === true, mute: value.automation?.mute !== false }, runRequested: value.automation?.enabled === true && value.runRequested === true,
     tasks: value.tasks.map(task => ({ id: task.id, target: task.target, scope: task.scope, selectionMode: task.selectionMode || 'all-pending', recheck: [...(task.recheck || [])], subject: task.subject ? { id: task.subject.id, title: task.subject.title, route: task.subject.route } : null, courses: task.courses.map(({ id, title, route, required, status, selected }) => ({ id, title, route, required, status, selected })), done: [...task.done], skipped: [...task.skipped], deferred: (task.deferred || []).map(({courseId, reason}) => ({courseId, reason})), current: task.current })) };
 }
 
@@ -531,7 +532,7 @@ function createController(options) {
   let recovery = null;
   let restorePending = false;
   const retries = new Map();
-  const defaultAutomation = { enabled: false, resumeOnReload: false };
+  const defaultAutomation = { enabled: false, resumeOnReload: false, mute: true };
   const played = new Set();
   const seenPlaying = new Set();
   const listeners = new Set();
@@ -739,8 +740,8 @@ function createController(options) {
     return edit(() => { ensureRecord(); record.window = { start: window.start, end: window.end }; return persist(); });
   };
   const setAutomation = async value => {
-    if (!value || typeof value.enabled !== 'boolean' || typeof value.resumeOnReload !== 'boolean') return false;
-    return edit(() => { ensureRecord(); record.automation = { enabled: value.enabled, resumeOnReload: value.enabled && value.resumeOnReload }; record.runRequested = false; return persist(); });
+    if (!value || typeof value.enabled !== 'boolean' || typeof value.resumeOnReload !== 'boolean' || (value.mute !== undefined && typeof value.mute !== 'boolean')) return false;
+    return edit(() => { ensureRecord(); record.automation = { enabled: value.enabled, resumeOnReload: value.enabled && value.resumeOnReload, mute: value.mute ?? record.automation?.mute ?? true }; record.runRequested = false; return persist(); });
   };
   const prepareSubject = (candidate, refreshId = null) => {
     status = 'preparing'; preparing = { stage: 'subject', candidate, refreshId, since: milliseconds() }; message = '正在打开专题，请等待课程加载。'; watch(); emit();
@@ -784,7 +785,7 @@ function createController(options) {
     stop(`遇到“重新学习”提示。${page.relearn.reason} 处理后请手动继续队列。`); notify(message); return true;
   };
   const muteCourse = course => {
-    if (status !== 'running' || !held || !runId) return;
+    if (status !== 'running' || !held || !runId || record?.automation?.mute === false) return;
     try { adapter.muteCurrentMedia?.(course, runId); } catch { /* Muting an unavailable player must not interrupt learning. */ }
   };
   const start = async (preferred = null) => {
@@ -1052,7 +1053,7 @@ function createController(options) {
             played.add(key);
             mediaPending = { key, since: milliseconds() };
             const token = generation;
-            Promise.resolve(adapter.playCurrentMedia()).then(success => {
+            Promise.resolve(adapter.playCurrentMedia(record.automation.mute)).then(success => {
               try {
                 if (destroyed || generation !== token || status !== 'running' || !verify()) return;
                 if (mediaPending?.key === key) mediaPending = null;
@@ -1182,14 +1183,16 @@ function createPanel(win, controller, version) {
     input.addEventListener('change', async () => {
       if (input.disabled) return;
       busy.add(input); input.disabled = true;
-      try { await controller.setAutomation({ enabled: automatic.checked, resumeOnReload: automatic.checked && resumeOnReload.checked }); }
+      try { await controller.setAutomation({ enabled: automatic.checked, resumeOnReload: automatic.checked && resumeOnReload.checked, mute: mute.checked }); }
       catch { diagnostic.textContent = '自动设置保存失败，请重试。'; }
       finally { busy.delete(input); render(controller.getState()); }
     }); return input;
   }
   const automatic = automaticInput('automatic', '自动重试、暂存异常课程并续学');
   const resumeOnReload = automaticInput('resumeOnReload', '刷新或重新打开后恢复已开始的队列');
-  element('p', '开启后，到学习时段自动继续；主动暂停会取消自动执行。需保持浏览器和网大页面打开。', autoBox).className = 'muted';
+  const mute = automaticInput('mute', '自动静音课程');
+  mute.title = '暂停任务后可修改；关闭后保留播放器原声音设置。';
+  element('p', '自动重试开启后，按学习时段续学；主动暂停会取消自动执行。需保持网大页面打开。', autoBox).className = 'muted';
   const utility = element('div', '', body); utility.className = 'buttons';
   button('stop-learning', '停止学习并退出', utility, () => controller.pause(), false);
   button('diagnose', '页面诊断', utility, () => { diagnostic.textContent = JSON.stringify(controller.diagnose(), null, 2); }, false);
@@ -1418,7 +1421,7 @@ function createPanel(win, controller, version) {
     candidates.hidden = !adding || Boolean(state.draft) || running || !state.candidates.length;
     if (state.draft) { draftTitle.textContent = state.draft.subject.title; updateCourses(draftCourses, state.draft.courses); }
     for (const control of editors) control.disabled = running || state.unavailable || control.dataset.legacyDisabled === 'true';
-    automatic.checked = state.automation?.enabled === true; resumeOnReload.checked = state.automation?.resumeOnReload === true;
+    automatic.checked = state.automation?.enabled === true; resumeOnReload.checked = state.automation?.resumeOnReload === true; mute.checked = state.automation?.mute !== false;
     resumeOnReload.disabled ||= !automatic.checked;
     for (const control of problemActions.querySelectorAll('button')) control.disabled ||= adding;
     const hasPending = state.tasks.some(item => item.subject && eligible(item).some(course => !isDone(item, course.id) && !item.skipped.includes(course.id) && !item.deferred?.some(entry => entry.courseId === course.id)));
@@ -1439,7 +1442,7 @@ function createPanel(win, controller, version) {
 
 
 
-const wdMainVersion = "0.1.0-beta.11";
+const wdMainVersion = "0.1.0-beta.12";
 
 function wdMainBootstrap(win) {
   if (win.location.protocol !== 'https:' || win.location.hostname !== 'wangda.chinamobile.com' || win.top !== win.self) return;

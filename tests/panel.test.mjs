@@ -22,6 +22,12 @@ function fixture(overrides = {}) {
 }
 const visibleText = node => [node, ...node.querySelectorAll('*')].filter(n => n.tagName !== 'STYLE' && !n.closest?.('[hidden]')).flatMap(n => [...n.childNodes].filter(child => child.nodeType === 3).map(child => child.textContent)).join(' ');
 
+test('自动模式内静音开关默认开启且独立于自动重试，选择保存后保持', async () => {
+  const f=fixture({tasks:[task()],automation:{enabled:false,resumeOnReload:false}});f.panel.open();const mute=f.root.querySelector('[name="mute"]');assert.ok(mute);assert.equal(mute.checked,true);assert.equal(mute.disabled,false);assert.match(mute.closest('label').textContent,/自动静音课程/u);
+  mute.checked=false;mute.dispatchEvent(new f.dom.window.Event('change'));for(let i=0;i<30;i++)await Promise.resolve();assert.deepEqual(f.calls.at(-1),['setAutomation',{enabled:false,resumeOnReload:false,mute:false}]);f.emit({message:'更新'});assert.equal(mute.checked,false);
+  f.emit({status:'running'});assert.equal(mute.disabled,true);f.close();
+});
+
 test('展开仅卡片显示当前课程，打开详情转移到课程行，收起显示简要时间', async () => {
   const title='示例课程：信息整理与协作应用';const t=task('t',[{...course('v'),title}]);const f=fixture({tasks:[t],status:'running',activeTaskId:'t',currentCourseId:'v',currentSectionTitle:'示例视频课节',message:'正在按平台课节状态连续学习。',currentPlayback:{taskId:'t',courseId:'v',sectionId:'s',paused:false,ended:false,currentTime:61,duration:120}});f.panel.open();
   assert.doesNotMatch(visibleText(f.root.querySelector('header')),/信息整理|01:01/u);assert.equal(f.root.querySelector('.status').hidden,true);assert.equal(visibleText(f.root).split(title).length-1,1);assert.doesNotMatch(visibleText(f.root),/待处理 0|跳过 0|所选 1|专区待学|正在按平台课节/u);
@@ -208,7 +214,7 @@ test('自动设置保存、批量选择、待处理原因和收起总进度都�
   const t=task(); t.deferred=[{courseId:'a',reason:'需要答题'}];
   const f=fixture({tasks:[t],activeTaskId:'t',automation:{enabled:false,resumeOnReload:false},currentCourseId:'a'});
   f.panel.open(); const automatic=f.root.querySelector('[name="automatic"]'); assert.ok(automatic); automatic.checked=true; automatic.dispatchEvent(new f.dom.window.Event('change')); for(let i=0;i<30;i++) await Promise.resolve();
-  assert.deepEqual(f.calls.at(-1),['setAutomation',{enabled:true,resumeOnReload:false}]);
+  assert.deepEqual(f.calls.at(-1),['setAutomation',{enabled:true,resumeOnReload:false,mute:true}]);
   const resume=f.root.querySelector('[name="resumeOnReload"]'); assert.equal(resume.disabled,false);
   await f.click('detail-t'); const detail=f.root.querySelector('[data-task-detail="t"]'); assert.match(detail.textContent,/待处理.*需要答题/u); assert.equal(detail.querySelector('[data-action="retry-t-a"]').hidden,false);
   await f.click('select-required-t'); assert.deepEqual(f.calls.at(-1),['selectCourses','t','required']);

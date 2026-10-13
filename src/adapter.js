@@ -273,11 +273,11 @@ export function createAdapter(win) {
       if (!navigate(subjectRoute, 'subject')) navigate('#/home', 'home');
       return true;
     },
-    async playCurrentMedia() {
+    async playCurrentMedia(mute = true) {
       if (read().kind !== 'course') return false;
       const media = [...win.document.querySelectorAll('video,audio')].find(item => item.paused && !item.ended);
       if (!media) return false;
-      try { media.muted = true; await media.play(); return true; } catch { return false; }
+      try { if (mute) media.muted = true; await media.play(); return true; } catch { return false; }
     },
     diagnose() {
       const page = read();

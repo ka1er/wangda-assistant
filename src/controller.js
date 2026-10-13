@@ -45,7 +45,7 @@ export function createController(options) {
   let recovery = null;
   let restorePending = false;
   const retries = new Map();
-  const defaultAutomation = { enabled: false, resumeOnReload: false };
+  const defaultAutomation = { enabled: false, resumeOnReload: false, mute: true };
   const played = new Set();
   const seenPlaying = new Set();
   const listeners = new Set();
@@ -253,8 +253,8 @@ export function createController(options) {
     return edit(() => { ensureRecord(); record.window = { start: window.start, end: window.end }; return persist(); });
   };
   const setAutomation = async value => {
-    if (!value || typeof value.enabled !== 'boolean' || typeof value.resumeOnReload !== 'boolean') return false;
-    return edit(() => { ensureRecord(); record.automation = { enabled: value.enabled, resumeOnReload: value.enabled && value.resumeOnReload }; record.runRequested = false; return persist(); });
+    if (!value || typeof value.enabled !== 'boolean' || typeof value.resumeOnReload !== 'boolean' || (value.mute !== undefined && typeof value.mute !== 'boolean')) return false;
+    return edit(() => { ensureRecord(); record.automation = { enabled: value.enabled, resumeOnReload: value.enabled && value.resumeOnReload, mute: value.mute ?? record.automation?.mute ?? true }; record.runRequested = false; return persist(); });
   };
   const prepareSubject = (candidate, refreshId = null) => {
     status = 'preparing'; preparing = { stage: 'subject', candidate, refreshId, since: milliseconds() }; message = '正在打开专题，请等待课程加载。'; watch(); emit();
@@ -298,7 +298,7 @@ export function createController(options) {
     stop(`遇到“重新学习”提示。${page.relearn.reason} 处理后请手动继续队列。`); notify(message); return true;
   };
   const muteCourse = course => {
-    if (status !== 'running' || !held || !runId) return;
+    if (status !== 'running' || !held || !runId || record?.automation?.mute === false) return;
     try { adapter.muteCurrentMedia?.(course, runId); } catch { /* Muting an unavailable player must not interrupt learning. */ }
   };
   const start = async (preferred = null) => {
@@ -566,7 +566,7 @@ export function createController(options) {
             played.add(key);
             mediaPending = { key, since: milliseconds() };
             const token = generation;
-            Promise.resolve(adapter.playCurrentMedia()).then(success => {
+            Promise.resolve(adapter.playCurrentMedia(record.automation.mute)).then(success => {
               try {
                 if (destroyed || generation !== token || status !== 'running' || !verify()) return;
                 if (mediaPending?.key === key) mediaPending = null;

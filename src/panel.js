@@ -80,14 +80,16 @@ export function createPanel(win, controller, version) {
     input.addEventListener('change', async () => {
       if (input.disabled) return;
       busy.add(input); input.disabled = true;
-      try { await controller.setAutomation({ enabled: automatic.checked, resumeOnReload: automatic.checked && resumeOnReload.checked }); }
+      try { await controller.setAutomation({ enabled: automatic.checked, resumeOnReload: automatic.checked && resumeOnReload.checked, mute: mute.checked }); }
       catch { diagnostic.textContent = '自动设置保存失败，请重试。'; }
       finally { busy.delete(input); render(controller.getState()); }
     }); return input;
   }
   const automatic = automaticInput('automatic', '自动重试、暂存异常课程并续学');
   const resumeOnReload = automaticInput('resumeOnReload', '刷新或重新打开后恢复已开始的队列');
-  element('p', '开启后，到学习时段自动继续；主动暂停会取消自动执行。需保持浏览器和网大页面打开。', autoBox).className = 'muted';
+  const mute = automaticInput('mute', '自动静音课程');
+  mute.title = '暂停任务后可修改；关闭后保留播放器原声音设置。';
+  element('p', '自动重试开启后，按学习时段续学；主动暂停会取消自动执行。需保持网大页面打开。', autoBox).className = 'muted';
   const utility = element('div', '', body); utility.className = 'buttons';
   button('stop-learning', '停止学习并退出', utility, () => controller.pause(), false);
   button('diagnose', '页面诊断', utility, () => { diagnostic.textContent = JSON.stringify(controller.diagnose(), null, 2); }, false);
@@ -316,7 +318,7 @@ export function createPanel(win, controller, version) {
     candidates.hidden = !adding || Boolean(state.draft) || running || !state.candidates.length;
     if (state.draft) { draftTitle.textContent = state.draft.subject.title; updateCourses(draftCourses, state.draft.courses); }
     for (const control of editors) control.disabled = running || state.unavailable || control.dataset.legacyDisabled === 'true';
-    automatic.checked = state.automation?.enabled === true; resumeOnReload.checked = state.automation?.resumeOnReload === true;
+    automatic.checked = state.automation?.enabled === true; resumeOnReload.checked = state.automation?.resumeOnReload === true; mute.checked = state.automation?.mute !== false;
     resumeOnReload.disabled ||= !automatic.checked;
     for (const control of problemActions.querySelectorAll('button')) control.disabled ||= adding;
     const hasPending = state.tasks.some(item => item.subject && eligible(item).some(course => !isDone(item, course.id) && !item.skipped.includes(course.id) && !item.deferred?.some(entry => entry.courseId === course.id)));
