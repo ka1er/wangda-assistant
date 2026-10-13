@@ -168,8 +168,13 @@ export function readPage(document, hash) {
     const active = page.sections.filter(section => section.active);
     if (active.length === 1) page.activeSectionId = active[0].id;
     else if (active.length > 1) page.issues.push('检测到多个活动课节');
-    const media = document.querySelector('video,audio');
-    if (media) page.media = { ended: Boolean(media.ended), paused: Boolean(media.paused) };
+    const players = document.querySelectorAll('video,audio'); const media = players[0];
+    if (media) {
+      page.media = { ended: Boolean(media.ended), paused: Boolean(media.paused) };
+      const currentTime = media.currentTime, duration = media.duration;
+      page.media.currentTime = players.length === 1 && Number.isFinite(currentTime) && currentTime >= 0 ? currentTime : null;
+      page.media.duration = players.length === 1 && Number.isFinite(duration) && duration > 0 ? duration : null;
+    }
     else if (active.some(section => [5, 6].includes(section.type))) page.issues.push('未识别本页媒体播放器');
   }
   if (page.kind === 'search') {

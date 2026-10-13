@@ -21,6 +21,7 @@ export function createController(options) {
   let target = '';
   let problem = null;
   let currentSectionTitle = '';
+  let currentPlayback = null;
   const defaultWindow = { start: '09:00', end: '24:00' };
   const pendingNotice = '有待学课程，请手动点击开始继续。';
   let status = 'paused';
@@ -50,7 +51,7 @@ export function createController(options) {
   const listeners = new Set();
   const copy = value => JSON.parse(JSON.stringify(value));
   const isDone = (item, id) => Boolean(item?.done?.includes(id) && !item.recheck?.includes(id));
-  const getState = () => ({ status, phase: restorePending ? 'resuming' : recovery?.network ? 'offline' : recovery ? 'retrying' : status, message, unavailable: blocked, window: copy(record?.window || defaultWindow), automation: copy(record?.automation || defaultAutomation), tasks: copy(record?.tasks || []), activeTaskId: record?.activeTaskId || null, currentCourseId: task?.current || null, currentSectionTitle, candidates: copy(candidates), draft: copy(draft), problem: copy(problem) });
+  const getState = () => ({ status, phase: restorePending ? 'resuming' : recovery?.network ? 'offline' : recovery ? 'retrying' : status, message, unavailable: blocked, window: copy(record?.window || defaultWindow), automation: copy(record?.automation || defaultAutomation), tasks: copy(record?.tasks || []), activeTaskId: record?.activeTaskId || null, currentCourseId: task?.current || null, currentSectionTitle, currentPlayback: copy(currentPlayback), candidates: copy(candidates), draft: copy(draft), problem: copy(problem) });
   const emit = () => { const state = getState(); for (const listener of listeners) listener(state); };
   const tell = text => { message = text; emit(); return false; };
   const milliseconds = () => now().getTime();
@@ -79,6 +80,7 @@ export function createController(options) {
     } catch { return true; /* Stop the last known learning page if its snapshot fails. */ }
   };
   const stop = (text, leave = false, complete = false, preserveRun = false) => {
+    currentPlayback = null;
     const wasRunning = status === 'running';
     restorePending = false;
     // Write the stop intent only while this runner still owns both the task revision and lease.
@@ -304,7 +306,7 @@ export function createController(options) {
     if (!entry || !entry.item.subject) return tell(record.tasks.some(item => item.deferred?.length) ? '仍有待处理课程，请在详情中重试。' : record.tasks.some(item => item.skipped.length) ? '仍有跳过课程未完成，请重试。' : '请勾选尚未核对的课程。');
     const token = generation;
     if (!await acquire() || token !== generation || !held || !verify()) return false;
-    record.activeTaskId = entry.item.id; task = entry.item; task.current = entry.course.id; problem = null; currentSectionTitle = '';
+    record.activeTaskId = entry.item.id; task = entry.item; task.current = entry.course.id; problem = null; currentSectionTitle = ''; currentPlayback = null;
     record.runRequested = record.automation.enabled;
     if (!persist()) return false;
     generation += 1; restorePending = false; status = isWithinWindow(now(), record.window) ? 'running' : 'waiting'; needOpen = true; played.clear(); seenPlaying.clear(); retries.clear(); pending = grace = loading = recovery = null;
@@ -326,11 +328,13 @@ export function createController(options) {
   };
   const action = (fn, expectation) => {
     if (!verify() || status !== 'running') return;
+    currentPlayback = null;
     if (!fn()) { recover('页面操作未成功。'); return; }
     pending = { ...expectation, since: milliseconds() };
     loading = null;
   };
   const nextCourse = page => {
+    currentPlayback = null;
     const entry = nextEntry();
     if (!entry) {
       const count = record.tasks.reduce((n, item) => n + (item.deferred?.length || 0), 0);
@@ -359,6 +363,7 @@ export function createController(options) {
     nextCourse(page);
   };
   const recover = reason => {
+    currentPlayback = null;
     if (!record?.automation.enabled) { stop(`${reason} 已暂停并退出学习页，请人工确认。`, true); return; }
     if (!verify() || status !== 'running') return;
     const key = `${task.id}:${task.current}`, attempt = (retries.get(key) || 0) + 1;
@@ -373,6 +378,7 @@ export function createController(options) {
     message = `${reason} 正在等待重试 ${attempt}/3。`; emit();
   };
   const waitWindow = () => {
+    currentPlayback = null;
     if (!record.automation.enabled) { stop('已到学习时段边界，已停止媒体并退出学习页。', true); return; }
     if (ownsCurrentLearningPage()) {
       try { adapter.pauseMedia(); if (adapter.leaveLearning(task.subject.route) === false) throw Error(); }
@@ -426,6 +432,7 @@ export function createController(options) {
     try { lease(); } catch (error) { storageError(error); return; }
     if (ticking) return;
     ticking = true;
+    currentPlayback = null;
     try {
       const page = adapter.read();
       if (page.kind === 'login' || page.kind === 'study-error') {
@@ -511,7 +518,12 @@ export function createController(options) {
       const inScope = sections.filter(item => task.scope === 'all' || item.required);
       if (inScope.some(item => !['learning', 'not-started', 'completed'].includes(item.status))) { waitFor('status', '课节状态无法识别'); return; }
       const active = sections.find(item => item.id === page.activeSectionId);
-      currentSectionTitle = active?.title || ''; emit();
+      if (active && (task.scope === 'all' || active.required) && [5, 6].includes(active.type) && page.media) {
+        currentPlayback = { taskId: task.id, courseId: current.id, sectionId: active.id, paused: Boolean(page.media.paused), ended: Boolean(page.media.ended),
+          currentTime: Number.isFinite(page.media.currentTime) && page.media.currentTime >= 0 ? page.media.currentTime : null,
+          duration: Number.isFinite(page.media.duration) && page.media.duration > 0 ? page.media.duration : null };
+      }
+      currentSectionTitle = active?.title || '';
       const decision = decideLearningAction(page, { status, scope: task.scope });
       if (decision.type === 'manual') { if (record.automation.enabled) deferCurrent('此课节需要人工处理，请完成后重试。'); else { stop('此课节需要人工处理，请在当前页面完成后再继续。'); notify(message); } return; }
       if (page.activeSectionId && !active) { waitFor('focus', '当前课节无法确认'); return; }
@@ -575,7 +587,7 @@ export function createController(options) {
         } else loading = null;
       } else waitFor('active', '等待平台确认当前课节');
     } catch { stop('页面读取或操作异常，已暂停，请人工确认。', true); }
-    finally { ticking = false; }
+    finally { ticking = false; emit(); }
   };
   try { record = readStored(); identity = record ? { taskId: record.taskId, revision: record.revision } : null; task = record?.tasks.find(item => item.id === record.activeTaskId) || null; } catch (error) { blocked = true; message = error.message?.includes('本地') || error.message?.includes('存储') ? error.message : '本地存储读取失败，无法启动。'; }
   if (!blocked && record?.automation.enabled && record.automation.resumeOnReload && record.runRequested) { restorePending = true; message = '正在准备恢复上次开始的队列。'; watch(); }

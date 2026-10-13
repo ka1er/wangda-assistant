@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         网大助手
 // @namespace    wangda-assistant
-// @version      0.1.0-beta.9
+// @version      0.1.0-beta.10
 // @updateURL    https://raw.githubusercontent.com/ka1er/wangda-assistant/refs/heads/beta-channel/dist/wangda-assistant.user.js
 // @downloadURL  https://raw.githubusercontent.com/ka1er/wangda-assistant/refs/heads/beta-channel/dist/wangda-assistant.user.js
 // @description  手动勾选课程、管理多专区任务队列，按平台完成状态连续学习
@@ -309,8 +309,13 @@ function readPage(document, hash) {
     const active = page.sections.filter(section => section.active);
     if (active.length === 1) page.activeSectionId = active[0].id;
     else if (active.length > 1) page.issues.push('检测到多个活动课节');
-    const media = document.querySelector('video,audio');
-    if (media) page.media = { ended: Boolean(media.ended), paused: Boolean(media.paused) };
+    const players = document.querySelectorAll('video,audio'); const media = players[0];
+    if (media) {
+      page.media = { ended: Boolean(media.ended), paused: Boolean(media.paused) };
+      const currentTime = media.currentTime, duration = media.duration;
+      page.media.currentTime = players.length === 1 && Number.isFinite(currentTime) && currentTime >= 0 ? currentTime : null;
+      page.media.duration = players.length === 1 && Number.isFinite(duration) && duration > 0 ? duration : null;
+    }
     else if (active.some(section => [5, 6].includes(section.type))) page.issues.push('未识别本页媒体播放器');
   }
   if (page.kind === 'search') {
@@ -491,6 +496,7 @@ function createController(options) {
   let target = '';
   let problem = null;
   let currentSectionTitle = '';
+  let currentPlayback = null;
   const defaultWindow = { start: '09:00', end: '24:00' };
   const pendingNotice = '有待学课程，请手动点击开始继续。';
   let status = 'paused';
@@ -520,7 +526,7 @@ function createController(options) {
   const listeners = new Set();
   const copy = value => JSON.parse(JSON.stringify(value));
   const isDone = (item, id) => Boolean(item?.done?.includes(id) && !item.recheck?.includes(id));
-  const getState = () => ({ status, phase: restorePending ? 'resuming' : recovery?.network ? 'offline' : recovery ? 'retrying' : status, message, unavailable: blocked, window: copy(record?.window || defaultWindow), automation: copy(record?.automation || defaultAutomation), tasks: copy(record?.tasks || []), activeTaskId: record?.activeTaskId || null, currentCourseId: task?.current || null, currentSectionTitle, candidates: copy(candidates), draft: copy(draft), problem: copy(problem) });
+  const getState = () => ({ status, phase: restorePending ? 'resuming' : recovery?.network ? 'offline' : recovery ? 'retrying' : status, message, unavailable: blocked, window: copy(record?.window || defaultWindow), automation: copy(record?.automation || defaultAutomation), tasks: copy(record?.tasks || []), activeTaskId: record?.activeTaskId || null, currentCourseId: task?.current || null, currentSectionTitle, currentPlayback: copy(currentPlayback), candidates: copy(candidates), draft: copy(draft), problem: copy(problem) });
   const emit = () => { const state = getState(); for (const listener of listeners) listener(state); };
   const tell = text => { message = text; emit(); return false; };
   const milliseconds = () => now().getTime();
@@ -549,6 +555,7 @@ function createController(options) {
     } catch { return true; /* Stop the last known learning page if its snapshot fails. */ }
   };
   const stop = (text, leave = false, complete = false, preserveRun = false) => {
+    currentPlayback = null;
     const wasRunning = status === 'running';
     restorePending = false;
     // Write the stop intent only while this runner still owns both the task revision and lease.
@@ -774,7 +781,7 @@ function createController(options) {
     if (!entry || !entry.item.subject) return tell(record.tasks.some(item => item.deferred?.length) ? '仍有待处理课程，请在详情中重试。' : record.tasks.some(item => item.skipped.length) ? '仍有跳过课程未完成，请重试。' : '请勾选尚未核对的课程。');
     const token = generation;
     if (!await acquire() || token !== generation || !held || !verify()) return false;
-    record.activeTaskId = entry.item.id; task = entry.item; task.current = entry.course.id; problem = null; currentSectionTitle = '';
+    record.activeTaskId = entry.item.id; task = entry.item; task.current = entry.course.id; problem = null; currentSectionTitle = ''; currentPlayback = null;
     record.runRequested = record.automation.enabled;
     if (!persist()) return false;
     generation += 1; restorePending = false; status = isWithinWindow(now(), record.window) ? 'running' : 'waiting'; needOpen = true; played.clear(); seenPlaying.clear(); retries.clear(); pending = grace = loading = recovery = null;
@@ -796,11 +803,13 @@ function createController(options) {
   };
   const action = (fn, expectation) => {
     if (!verify() || status !== 'running') return;
+    currentPlayback = null;
     if (!fn()) { recover('页面操作未成功。'); return; }
     pending = { ...expectation, since: milliseconds() };
     loading = null;
   };
   const nextCourse = page => {
+    currentPlayback = null;
     const entry = nextEntry();
     if (!entry) {
       const count = record.tasks.reduce((n, item) => n + (item.deferred?.length || 0), 0);
@@ -829,6 +838,7 @@ function createController(options) {
     nextCourse(page);
   };
   const recover = reason => {
+    currentPlayback = null;
     if (!record?.automation.enabled) { stop(`${reason} 已暂停并退出学习页，请人工确认。`, true); return; }
     if (!verify() || status !== 'running') return;
     const key = `${task.id}:${task.current}`, attempt = (retries.get(key) || 0) + 1;
@@ -843,6 +853,7 @@ function createController(options) {
     message = `${reason} 正在等待重试 ${attempt}/3。`; emit();
   };
   const waitWindow = () => {
+    currentPlayback = null;
     if (!record.automation.enabled) { stop('已到学习时段边界，已停止媒体并退出学习页。', true); return; }
     if (ownsCurrentLearningPage()) {
       try { adapter.pauseMedia(); if (adapter.leaveLearning(task.subject.route) === false) throw Error(); }
@@ -896,6 +907,7 @@ function createController(options) {
     try { lease(); } catch (error) { storageError(error); return; }
     if (ticking) return;
     ticking = true;
+    currentPlayback = null;
     try {
       const page = adapter.read();
       if (page.kind === 'login' || page.kind === 'study-error') {
@@ -981,7 +993,12 @@ function createController(options) {
       const inScope = sections.filter(item => task.scope === 'all' || item.required);
       if (inScope.some(item => !['learning', 'not-started', 'completed'].includes(item.status))) { waitFor('status', '课节状态无法识别'); return; }
       const active = sections.find(item => item.id === page.activeSectionId);
-      currentSectionTitle = active?.title || ''; emit();
+      if (active && (task.scope === 'all' || active.required) && [5, 6].includes(active.type) && page.media) {
+        currentPlayback = { taskId: task.id, courseId: current.id, sectionId: active.id, paused: Boolean(page.media.paused), ended: Boolean(page.media.ended),
+          currentTime: Number.isFinite(page.media.currentTime) && page.media.currentTime >= 0 ? page.media.currentTime : null,
+          duration: Number.isFinite(page.media.duration) && page.media.duration > 0 ? page.media.duration : null };
+      }
+      currentSectionTitle = active?.title || '';
       const decision = decideLearningAction(page, { status, scope: task.scope });
       if (decision.type === 'manual') { if (record.automation.enabled) deferCurrent('此课节需要人工处理，请完成后重试。'); else { stop('此课节需要人工处理，请在当前页面完成后再继续。'); notify(message); } return; }
       if (page.activeSectionId && !active) { waitFor('focus', '当前课节无法确认'); return; }
@@ -1045,7 +1062,7 @@ function createController(options) {
         } else loading = null;
       } else waitFor('active', '等待平台确认当前课节');
     } catch { stop('页面读取或操作异常，已暂停，请人工确认。', true); }
-    finally { ticking = false; }
+    finally { ticking = false; emit(); }
   };
   try { record = readStored(); identity = record ? { taskId: record.taskId, revision: record.revision } : null; task = record?.tasks.find(item => item.id === record.activeTaskId) || null; } catch (error) { blocked = true; message = error.message?.includes('本地') || error.message?.includes('存储') ? error.message : '本地存储读取失败，无法启动。'; }
   if (!blocked && record?.automation.enabled && record.automation.resumeOnReload && record.runRequested) { restorePending = true; message = '正在准备恢复上次开始的队列。'; watch(); }
@@ -1080,6 +1097,7 @@ function createPanel(win, controller, version) {
   element('style', 'section{display:flex;flex-direction:column;max-height:calc(100dvh - 32px)}header{flex-shrink:0}.body{min-height:0}');
   element('style', '.task-head{display:flex;align-items:flex-start;gap:7px}.task-head h3{flex:1;min-width:0}.sort-actions{display:flex;gap:4px;flex-shrink:0}.sort-actions button{padding:2px 5px;font-size:12px}.sort-handle{cursor:grab}.sort-handle:active{cursor:grabbing}article[data-drop=before]{border-top:3px solid #176ac2}article[data-drop=after]{border-bottom:3px solid #176ac2}article[data-dragging]{opacity:.6}');
   element('style', 'select,input[type=search]{font:inherit;width:100%;border:1px solid #b8c9d9;border-radius:4px;background:#fff;color:#17344d;padding:6px}');
+  element('style', 'article[data-state=active]{background:#edf6ff;border-color:#72a9df;box-shadow:inset 3px 0 #176ac2}article[data-state=completed]{background:#f3f4f6;border-color:#d8dee5;color:#65727f}article[data-state=attention]{background:#fff9ef;border-color:#e9c78f}.task-priority{margin:3px 0 7px}.task-current{font-size:12px;color:#155a9b;white-space:pre-wrap}.course[data-state=active]{background:#dfedfc;border-radius:4px;padding:8px;border-left:3px solid #176ac2}.course[data-state=active]>span>span,.course[data-state=active] small{color:#155a9b}.course[data-state=active]>span>span{font-weight:600}.course[data-state=completed]{color:#6b7885}.course[data-state=attention] small{color:#8a5716}progress{display:block;width:100%;height:6px;margin:6px 0 9px;border:0;border-radius:4px;overflow:hidden;background:#e1e8ef;accent-color:#176ac2}progress::-webkit-progress-bar{background:#e1e8ef}progress::-webkit-progress-value{background:#176ac2}progress::-moz-progress-bar{background:#176ac2}article[data-state=completed] progress{accent-color:#8b98a5}article[data-state=completed] progress::-webkit-progress-value{background:#8b98a5}article[data-state=completed] progress::-moz-progress-bar{background:#8b98a5}.course progress{margin-bottom:2px}.playback-time{margin-top:4px;font-variant-numeric:tabular-nums}');
   const header = element('header', '', shell);
   const headline = element('div', '', header); headline.className = 'headline';
   const title = element('div', '', headline); element('strong', '网大助手', title); element('small', ` ${version}`, title);
@@ -1101,6 +1119,7 @@ function createPanel(win, controller, version) {
   const toggle = button('toggle', '展开', headerButtons, () => setOpen(body.hidden), false); toggle.setAttribute('aria-expanded', 'false');
   const progress = element('div', '', header); progress.className = 'progress'; progress.setAttribute('role', 'status'); progress.setAttribute('aria-live', 'polite');
   const compact = element('div', '', header); compact.className = 'muted'; compact.style.cssText = 'white-space:pre-wrap;overflow-wrap:anywhere;max-height:4.5em;overflow:auto;';
+  const compactTime = element('div', '', header); compactTime.className = 'muted playback-time'; compactTime.dataset.playbackTime = '';
   const body = element('div', '', shell); body.className = 'body'; body.hidden = true;
   const execution = element('div', '', body); execution.className = 'status';
   const currentText = element('div', '', execution); const message = element('div', '', execution);
@@ -1111,7 +1130,7 @@ function createPanel(win, controller, version) {
   const queueView = element('div', '', body); queueView.dataset.view = 'queue';
   const queueHeading = element('div', '', queueView); queueHeading.className = 'headline'; element('h2', '任务队列', queueHeading);
   button('add', '添加专区', queueHeading, () => { adding = true; render(controller.getState()); target.focus(); });
-  element('p', '拖动 ↕ 调整先后；当前课程继续，下一门按新顺序执行。', queueView).className = 'muted';
+  element('p', '当前专区置顶，完成专区沉底。拖动 ↕ 调整执行优先级；当前课程继续，下一门按优先级执行。', queueView).className = 'muted';
   const empty = element('p', '还没有任务，点击“添加专区”开始。', queueView); empty.className = 'muted';
   const taskList = element('div', '', queueView);
   const queueControls = element('div', '', queueView); queueControls.className = 'buttons';
@@ -1161,6 +1180,27 @@ function createPanel(win, controller, version) {
   const eligible = task => task.courses.filter(course => course.selected && (task.scope === 'all' || course.required));
   const isDone = (task, id) => Boolean(task?.done.includes(id) && !task.recheck?.includes(id));
   const counts = task => { const selected = eligible(task); return { selected: selected.length, done: selected.filter(course => isDone(task, course.id)).length, skipped: selected.filter(course => task.skipped.includes(course.id)).length, deferred: task.deferred?.length || 0 }; };
+  const completeTask = task => { if (!task) return false; const c = counts(task); return Boolean(task.subject && c.selected && c.done === c.selected && !task.skipped.length && !c.deferred && !task.recheck?.length); };
+  const currentTask = (task, state = latest) => {
+    if (!task?.subject || task.id !== state.activeTaskId || completeTask(task) || ['complete', 'preparing'].includes(state.status)) return false;
+    const selected = eligible(task);
+    return Boolean(selected.length && (state.currentCourseId ? selected.some(course => course.id === state.currentCourseId && (state.status === 'running' || !isDone(task, course.id)) && !task.skipped.includes(course.id) && !task.deferred?.some(entry => entry.courseId === course.id)) : ['running', 'waiting'].includes(state.status) || state.phase === 'resuming'));
+  };
+  const sortableTasks = () => latest.tasks.filter(task => !completeTask(task));
+  const phaseLabel = state => ({ paused: '已暂停', preparing: '正在准备', running: '学习中', complete: '已完成', retrying: '正在重试', waiting: '等待学习时段', offline: '等待网络', resuming: '正在恢复' }[state.phase || state.status] || '等待确认');
+  const playbackFor = (item, courseId) => {
+    const value = latest.currentPlayback;
+    return currentTask(item) && latest.status === 'running' && !['retrying', 'offline', 'resuming'].includes(latest.phase) && value?.taskId === item.id && value.courseId === courseId ? value : null;
+  };
+  const executionLabel = (item, courseId = latest.currentCourseId) => {
+    if (latest.status !== 'running' || ['retrying', 'offline', 'resuming'].includes(latest.phase)) return phaseLabel(latest);
+    if (isDone(item, courseId)) return '正在切换课程';
+    const playback = playbackFor(item, courseId);
+    if (playback) return playback.ended ? '等待平台确认完成' : playback.paused ? '正在准备播放' : '正在播放';
+    return latest.currentSectionTitle ? '学习中' : '正在进入课程';
+  };
+  const clock = value => { const seconds = Math.floor(value); const minutes = Math.floor(seconds / 60); return minutes >= 60 ? `${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}` : `${String(minutes).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`; };
+  const playbackText = value => Number.isFinite(value?.currentTime) && Number.isFinite(value?.duration) && value.currentTime >= 0 && value.duration > 0 ? `当前课节播放 ${clock(Math.min(value.currentTime, value.duration))} / ${clock(value.duration)}` : '';
   const saveWindow = async () => {
     const next = { start: fields.start.value.trim(), end: fields.end.value.trim() };
     if (JSON.stringify(next) !== JSON.stringify(controller.getState().window) && !await controller.setWindow(next)) return false;
@@ -1178,6 +1218,11 @@ function createPanel(win, controller, version) {
     reordering = true; render(controller.getState());
     try { if (!await controller.moveTask(id, index)) diagnostic.textContent = '顺序未保存，请查看当前提示后重试。'; }
     finally { reordering = false; render(controller.getState()); }
+  };
+  const movePriority = (id, offset) => {
+    const ordered = sortableTasks(); const index = ordered.findIndex(task => task.id === id); const neighbor = ordered[index + offset];
+    if (index < 0 || !neighbor) return;
+    return moveDisplayedTask(id, latest.tasks.findIndex(task => task.id === neighbor.id));
   };
   const clearDrag = () => {
     draggedTaskId = null;
@@ -1216,6 +1261,7 @@ function createPanel(win, controller, version) {
         const label = element('label', '', view.pending); label.className = 'course';
         const input = element('input', '', label); input.type = 'checkbox'; input.dataset.course = course.id; editors.add(input);
         const text = element('span', '', label); const caption = element('span', '', text); const meta = element('small', '', text);
+        const time = element('small', '', text); time.className = 'playback-time'; const playback = element('progress', '', text); playback.setAttribute('aria-label', '当前课节播放进度');
         input.addEventListener('change', async () => {
           if (input.disabled) return;
           busy.add(input); input.disabled = true;
@@ -1224,12 +1270,17 @@ function createPanel(win, controller, version) {
           finally { busy.delete(input); render(controller.getState()); }
         });
         const retry = item ? button(`retry-${item.id}-${course.id}`, '重试', label, () => controller.retry(item.id, course.id)) : null;
-        row = { label, input, caption, meta, retry }; view.nodes.set(course.id, row);
+        row = { label, input, caption, meta, retry, time, playback }; view.nodes.set(course.id, row);
       }
       const recheck = item?.recheck?.includes(course.id);
-      const done = !recheck && (isDone(item, course.id) || course.status === 'completed'); const skipped = item?.skipped.includes(course.id);
+      const current = item && currentTask(item) && latest.currentCourseId === course.id && !isDone(item, course.id);
+      const done = !current && !recheck && (isDone(item, course.id) || course.status === 'completed'); const skipped = item?.skipped.includes(course.id);
       const deferred = item?.deferred?.find(entry => entry.courseId === course.id);
-      const status = deferred ? `待处理：${deferred.reason}` : skipped ? '已跳过' : recheck ? '待复查课节' : isDone(item, course.id) ? '已完成' : ({ completed: '已完成', learning: '学习中', 'not-started': '未开始', unknown: '待确认' }[course.status] || '待确认');
+      const status = deferred ? `待处理：${deferred.reason}` : skipped ? '已跳过' : current ? executionLabel(item, course.id) : recheck ? '待复查课节' : isDone(item, course.id) ? '已完成' : ({ completed: '已完成', learning: '学习中', 'not-started': '未开始', unknown: '待确认' }[course.status] || '待确认');
+      row.label.dataset.state = current ? 'active' : deferred || skipped ? 'attention' : done ? 'completed' : 'pending';
+      const playback = current ? playbackFor(item, course.id) : null; const timeText = playbackText(playback);
+      row.time.textContent = timeText; row.time.hidden = !timeText; row.playback.hidden = !timeText;
+      row.playback.max = timeText ? playback.duration : 1; row.playback.value = timeText ? Math.min(playback.currentTime, playback.duration) : 0;
       row.caption.textContent = course.title; row.meta.textContent = `${status} · ${course.required ? '必修' : '选修'}`; row.input.checked = course.selected;
       row.input.disabled = latest.unavailable || ['running', 'preparing', 'waiting'].includes(latest.status) || Boolean(item?.scope === 'required' && !course.required);
       row.input.dataset.legacyDisabled = String(Boolean(item?.scope === 'required' && !course.required));
@@ -1246,40 +1297,43 @@ function createPanel(win, controller, version) {
   }
   function updateTasks(state) {
     const ids = new Set(state.tasks.map(task => task.id));
-    for (const [id, view] of taskNodes) if (!ids.has(id)) { for (const control of view.article.querySelectorAll('button,input')) editors.delete(control); view.article.remove(); taskNodes.delete(id); }
-    for (const [index, item] of state.tasks.entries()) {
+    for (const [id, view] of taskNodes) if (!ids.has(id)) { for (const control of view.article.querySelectorAll('button,input,select')) editors.delete(control); view.article.remove(); taskNodes.delete(id); }
+    for (const item of state.tasks) {
       let view = taskNodes.get(item.id);
       if (!view) {
         const article = element('article', '', taskList); article.dataset.taskId = item.id;
         const heading = element('div', '', article); heading.className = 'task-head'; const title = element('h3', '', heading);
         const sorting = element('div', '', heading); sorting.className = 'sort-actions';
         const handle = element('button', '↕', sorting); handle.type = 'button'; handle.className = 'sort-handle'; handle.dataset.dragTask = item.id; handle.title = '拖动调整专区顺序';
-        const up = button(`move-up-${item.id}`, '上移', sorting, () => moveDisplayedTask(item.id, latest.tasks.findIndex(task => task.id === item.id) - 1), false);
-        const down = button(`move-down-${item.id}`, '下移', sorting, () => moveDisplayedTask(item.id, latest.tasks.findIndex(task => task.id === item.id) + 1), false);
+        const up = button(`move-up-${item.id}`, '上移', sorting, () => movePriority(item.id, -1), false);
+        const down = button(`move-down-${item.id}`, '下移', sorting, () => movePriority(item.id, 1), false);
         handle.addEventListener('dragstart', event => {
-          if (!canSort()) { event.preventDefault(); return; }
+          if (!canSort() || handle.disabled || completeTask(latest.tasks.find(task => task.id === item.id))) { event.preventDefault(); return; }
           clearDrag(); draggedTaskId = item.id; article.dataset.dragging = '';
           if (event.dataTransfer) { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', item.id); }
         });
         handle.addEventListener('dragend', clearDrag);
         const after = event => { const box = article.getBoundingClientRect(); return event.clientY >= box.top + box.height / 2; };
         article.addEventListener('dragover', event => {
-          if (!draggedTaskId || !canSort()) return;
+          if (!draggedTaskId || !canSort() || completeTask(latest.tasks.find(task => task.id === item.id))) return;
           event.preventDefault(); for (const node of taskList.children) delete node.dataset.drop;
           if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
           if (draggedTaskId !== item.id) article.dataset.drop = after(event) ? 'after' : 'before';
         });
         article.addEventListener('dragleave', event => { if (!article.contains(event.relatedTarget)) delete article.dataset.drop; });
         article.addEventListener('drop', async event => {
-          if (!draggedTaskId || !canSort()) return;
+          if (!draggedTaskId || !canSort() || completeTask(latest.tasks.find(task => task.id === item.id))) { clearDrag(); return; }
           event.preventDefault(); const id = draggedTaskId;
           const from = latest.tasks.findIndex(task => task.id === id), target = latest.tasks.findIndex(task => task.id === item.id);
           const insertion = target + Number(after(event)); clearDrag();
-          if (from < 0 || target < 0 || id === item.id) return;
+          if (from < 0 || target < 0 || id === item.id || completeTask(latest.tasks[from])) return;
           try { await moveDisplayedTask(id, insertion - Number(from < insertion)); }
           catch { diagnostic.textContent = '顺序未保存，请查看当前提示后重试。'; }
         });
+        const priority = element('p', '', article); priority.className = 'task-priority muted';
         const summary = element('p', '', article); summary.dataset.taskSummary = item.id;
+        const completion = element('progress', '', article); completion.dataset.taskProgress = item.id;
+        const current = element('p', '', article); current.className = 'task-current';
         const detailButton = button(`detail-${item.id}`, '查看详情', article, () => { detail.hidden = !detail.hidden; detailButton.textContent = detail.hidden ? '查看详情' : '收起详情'; detailButton.setAttribute('aria-expanded', String(!detail.hidden)); }, false); detailButton.setAttribute('aria-expanded', 'false');
         const detail = element('div', '', article); detail.dataset.taskDetail = item.id; detail.hidden = true;
         const legacy = element('p', '旧任务仅执行必修课程和课节；需要包含选修可移出后重新添加专区。', detail); legacy.className = 'muted';
@@ -1287,18 +1341,25 @@ function createPanel(win, controller, version) {
         const refresh = button(`refresh-${item.id}`, '更新清单', actions, () => controller.refreshTask(item.id));
         button(`recheck-${item.id}`, '复查所选已完成课程', actions, () => controller.recheckCompleted(item.id));
         button(`remove-${item.id}`, '移出队列', actions, () => controller.removeTask(item.id));
-        view = { article, title, summary, detail, legacy, courses, refresh, handle, up, down }; taskNodes.set(item.id, view);
+        view = { article, title, priority, summary, completion, current, detail, legacy, courses, refresh, handle, up, down }; taskNodes.set(item.id, view);
       }
-      view.title.textContent = `${index + 1}. ${item.subject?.title || item.target}`;
+      view.title.textContent = item.subject?.title || item.target;
       view.handle.setAttribute('aria-label', `拖动排序：${item.subject?.title || item.target}`);
-      view.handle.disabled = !canSort() || state.tasks.length < 2; view.handle.draggable = !view.handle.disabled;
-      view.up.disabled = !canSort() || index === 0; view.down.disabled = !canSort() || index === state.tasks.length - 1;
-      if (taskList.children[index] !== view.article) taskList.insertBefore(view.article, taskList.children[index] || null);
+      const sortable = sortableTasks(); const priorityIndex = sortable.findIndex(task => task.id === item.id); const completed = completeTask(item), current = currentTask(item, state);
+      view.handle.disabled = !canSort() || completed || sortable.length < 2; view.handle.draggable = !view.handle.disabled;
+      view.up.disabled = !canSort() || completed || priorityIndex <= 0; view.down.disabled = !canSort() || completed || priorityIndex === sortable.length - 1;
+      view.up.title = '提高执行优先级，当前课程继续'; view.down.title = '降低执行优先级，当前课程继续';
       const total = counts(item);
-      const status = !item.subject ? '尚未读取专区，请移出后重新添加' : !total.selected ? '尚未选择课程' : item.id === state.activeTaskId && ['running', 'preparing', 'waiting'].includes(state.status) ? '执行中' : total.deferred ? '有待处理课程' : item.skipped.length ? '有跳过课程待重试' : total.done === total.selected ? '全部完成' : '待学习';
+      const status = !item.subject ? '尚未读取专区，请移出后重新添加' : !total.selected ? '尚未选择课程' : current ? executionLabel(item) : total.deferred ? '有待处理课程' : item.skipped.length ? '有跳过课程待重试' : item.recheck?.length ? '有待复查课程' : completed ? '全部完成' : '待学习';
+      view.article.dataset.state = current ? 'active' : completed ? 'completed' : total.deferred || item.skipped.length || item.recheck?.length ? 'attention' : 'pending';
+      view.priority.textContent = completed ? '✓ 全部完成' : `${current ? '当前执行 · ' : ''}执行优先级 ${priorityIndex + 1}`;
       view.summary.textContent = `${item.selectionMode === 'specific' ? '指定课程' : '专区待学'} · 所选 ${total.selected} · 完成 ${total.done} · 待处理 ${total.deferred} · 跳过 ${total.skipped} · ${status}`;
+      view.completion.max = total.selected || 1; view.completion.value = total.done; view.completion.hidden = !total.selected; view.completion.setAttribute('aria-label', `专区已完成 ${total.done} / ${total.selected} 门`);
+      view.current.hidden = !current; view.current.textContent = current ? [`当前课程：${item.courses.find(course => course.id === state.currentCourseId)?.title || '正在确认课程'}`, playbackText(playbackFor(item, state.currentCourseId))].filter(Boolean).join('\n') : '';
       view.legacy.hidden = item.scope !== 'required'; view.refresh.dataset.legacyDisabled = String(!item.subject); updateCourses(view.courses, item.courses, item);
     }
+    const display = [...state.tasks.filter(item => currentTask(item, state)), ...state.tasks.filter(item => !currentTask(item, state) && !completeTask(item)), ...state.tasks.filter(completeTask)];
+    for (const [index, item] of display.entries()) { const node = taskNodes.get(item.id).article; if (taskList.children[index] !== node) taskList.insertBefore(node, taskList.children[index] || null); }
   }
   function render(state) {
     latest = state;
@@ -1306,8 +1367,9 @@ function createPanel(win, controller, version) {
     const active = state.tasks.find(item => item.id === state.activeTaskId); const total = active ? counts(active) : { done: 0, selected: 0 };
     const labels = { paused: '已暂停', preparing: '正在准备', running: '学习中', complete: '已完成', retrying: '正在重试', waiting: '等待学习时段', offline: '等待网络', resuming: '正在恢复' };
     const all = state.tasks.reduce((sum, task) => { const c = counts(task); return { done: sum.done + c.done, selected: sum.selected + c.selected, deferred: sum.deferred + c.deferred }; }, { done: 0, selected: 0, deferred: 0 });
-    progress.textContent = `${labels[state.phase || state.status] || state.status} · 专区 ${active ? state.tasks.indexOf(active) + 1 : 0}/${state.tasks.length} · 本任务完成 ${total.done}/${total.selected} 门 · 总完成 ${all.done}/${all.selected}${all.deferred ? ` · 待处理 ${all.deferred}` : ''}`;
+    progress.textContent = `${labels[state.phase || state.status] || state.status} · 专区完成 ${state.tasks.filter(completeTask).length}/${state.tasks.length} · 本任务完成 ${total.done}/${total.selected} 门 · 总完成 ${all.done}/${all.selected}${all.deferred ? ` · 待处理 ${all.deferred}` : ''}`;
     compact.textContent = [active?.courses.find(course => course.id === state.currentCourseId)?.title || '', state.message].filter(Boolean).join('\n');
+    compactTime.textContent = active ? playbackText(playbackFor(active, state.currentCourseId)) : ''; compactTime.hidden = !compactTime.textContent;
     currentText.textContent = [`当前专区：${active?.subject?.title || '—'}`, `当前课程：${active?.courses.find(course => course.id === state.currentCourseId)?.title || '—'}`, `当前课节：${state.currentSectionTitle || '—'}`].join('\n'); message.textContent = state.message;
     problemBox.hidden = !state.problem;
     if (state.problem) { const item = state.tasks.find(task => task.id === state.problem.taskId); problemText.textContent = `${item?.subject?.title || item?.target || '专区'} · ${item?.courses.find(course => course.id === state.problem.courseId)?.title || '课程'}\n${state.problem.reason}`; }
@@ -1344,7 +1406,7 @@ function createPanel(win, controller, version) {
 
 
 
-const wdMainVersion = "0.1.0-beta.9";
+const wdMainVersion = "0.1.0-beta.10";
 
 function wdMainBootstrap(win) {
   if (win.location.protocol !== 'https:' || win.location.hostname !== 'wangda.chinamobile.com' || win.top !== win.self) return;

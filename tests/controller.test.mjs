@@ -26,6 +26,21 @@ export function course(sections, extra = {}) { return { kind: 'course', subjectI
 export function section(id = 'v', type = 5, status = 'learning', active = true) { return { id, courseId: 'c', type, status, active, required: true }; }
 export async function elapse(f, duration) { for (let remaining = duration; remaining > 0; remaining -= 1000) { f.advance(Math.min(remaining, 1000)); await f.c.tick(); } }
 
+test('播放时间仅从已核对课程课节展示，不持久化且切节图文暂停时清除', async () => {
+  const f=await ready(fixture());await f.c.start();f.page(course([section()],{media:{paused:false,ended:false,currentTime:42,duration:100}}));await f.c.tick();
+  assert.deepEqual(f.c.getState().currentPlayback,{taskId:f.c.getState().activeTaskId,courseId:'c',sectionId:'v',paused:false,ended:false,currentTime:42,duration:100});assert.equal(JSON.stringify(f.shared).includes('currentTime'),false);
+  f.page(course([section('doc',1)],{media:{paused:false,ended:false,currentTime:42,duration:100}}));await f.c.tick();assert.equal(f.c.getState().currentPlayback,null);
+  f.page(course([section()],{media:{paused:false,ended:true,currentTime:100,duration:100}}));await f.c.tick();assert.equal(f.c.getState().tasks[0].done.length,0);assert.equal(f.c.getState().currentPlayback.ended,true);
+  await f.c.pause();assert.equal(f.c.getState().currentPlayback,null);f.c.destroy();
+});
+
+test('离开课程或结构未确认时不能保留上一页播放进度', async () => {
+  for(const patch of [{issues:['课节标识无法识别']},{route:'#/study/course/detail/subject-course/other/6/s',courseId:'other'}]){
+    const f=await ready(fixture());await f.c.start();f.page(course([section()],{media:{paused:false,ended:false,currentTime:2,duration:10}}));await f.c.tick();assert.ok(f.c.getState().currentPlayback);
+    f.page(patch);await f.c.tick();assert.equal(f.c.getState().currentPlayback,null);f.c.destroy();
+  }
+});
+
 test('指定范围先清空预选，加入刷新新增课程不勾选，范围与原勾选恢复', async () => {
   const f=fixture(); await f.c.collectDraft(); assert.equal(typeof f.c.setTaskMode,'function');
   assert.equal(await f.c.setTaskMode(null,'specific'),true); assert.equal(f.c.getState().draft.selectionMode,'specific'); assert.equal(f.c.getState().draft.courses[0].selected,false);

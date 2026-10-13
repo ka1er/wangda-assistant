@@ -127,8 +127,16 @@ test('视频结束仅为媒体快照，不改变课节状态', () => {
   const { window } = dom(chapters(section('one', { active: true })) + '<video></video>');
   Object.defineProperty(window.document.querySelector('video'), 'ended', { value: true });
   const page = readPage(window.document, courseRoute);
-  assert.deepEqual(page.media, { ended: true, paused: true });
+  assert.deepEqual(page.media, { ended: true, paused: true, currentTime: 0, duration: null });
   assert.equal(page.sections[0].status, 'not-started');
+});
+
+test('仅单个原生播放器提供有效时间，未知时长和多个媒体不猜测播放百分比', () => {
+  const {window}=dom(chapters(section('one',{active:true,type:5}))+'<video></video>');const media=window.document.querySelector('video');
+  Object.defineProperty(media,'currentTime',{configurable:true,value:42});Object.defineProperty(media,'duration',{configurable:true,value:100});
+  assert.equal(readPage(window.document,courseRoute).media.currentTime,42);assert.equal(readPage(window.document,courseRoute).media.duration,100);
+  for(const value of [NaN,Infinity,0,-1]){Object.defineProperty(media,'duration',{configurable:true,value});assert.equal(readPage(window.document,courseRoute).media.duration,null);}
+  Object.defineProperty(media,'duration',{configurable:true,value:100});window.document.body.append(window.document.createElement('audio'));assert.equal(readPage(window.document,courseRoute).media.currentTime,null);assert.equal(readPage(window.document,courseRoute).media.duration,null);window.close();
 });
 
 test('音视频活动课节未出现本页播放器时提示加载识别问题', () => {
