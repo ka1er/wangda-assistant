@@ -42,12 +42,14 @@ export function createController(options) {
   let needOpen = false;
   let ticking = false;
   let mediaPending = null;
+  let resumeNoticeKey = null;
   let recovery = null;
   let restorePending = false;
   const retries = new Map();
   const defaultAutomation = { enabled: false, resumeOnReload: false, mute: true };
   const played = new Set();
   const seenPlaying = new Set();
+  const resumeAttempts = new Map();
   const listeners = new Set();
   const copy = value => JSON.parse(JSON.stringify(value));
   const isDone = (item, id) => Boolean(item?.done?.includes(id) && !item.recheck?.includes(id));
@@ -313,7 +315,7 @@ export function createController(options) {
     record.activeTaskId = entry.item.id; task = entry.item; task.current = entry.course.id; problem = null; currentSectionTitle = ''; currentPlayback = null;
     record.runRequested = record.automation.enabled;
     if (!persist()) return false;
-    generation += 1; restorePending = false; status = isWithinWindow(now(), record.window) ? 'running' : 'waiting'; needOpen = true; played.clear(); seenPlaying.clear(); retries.clear(); pending = grace = loading = recovery = null;
+    generation += 1; restorePending = false; status = isWithinWindow(now(), record.window) ? 'running' : 'waiting'; needOpen = true; played.clear(); seenPlaying.clear(); resumeAttempts.clear(); retries.clear(); pending = grace = loading = recovery = null;
     message = status === 'waiting' ? `等待学习时段 ${record.window.start}—${record.window.end}（北京时间），到时自动继续。` : '正在按平台课节状态连续学习。';
     if (status === 'waiting') waitWindow();
     else muteCourse(entry.course);
@@ -390,7 +392,7 @@ export function createController(options) {
       catch { stop('学习时段结束，但未能退出学习页，请手动停止。', true); notify(message); return; }
     }
     generation += 1; mediaPending = null; pending = grace = loading = recovery = null; needOpen = true;
-    played.clear(); seenPlaying.clear();
+    played.clear(); seenPlaying.clear(); resumeAttempts.clear();
     status = 'waiting'; message = `等待下次学习时段 ${record.window.start}—${record.window.end}（北京时间），到时自动继续。`; emit();
   };
   const retry = async (taskId = problem?.taskId, courseId = problem?.courseId) => {
@@ -440,6 +442,10 @@ export function createController(options) {
     currentPlayback = null;
     try {
       const page = adapter.read();
+      if (resumeNoticeKey && (resumeNoticeKey !== `${task?.id}:${page.courseId}:${page.activeSectionId}` || !page.media?.paused || page.media.ended || page.sections?.some(item => item.id === page.activeSectionId && item.status === 'completed'))) {
+        resumeNoticeKey = null;
+        if (message.startsWith('播放已暂停，正在自动恢复播放')) message = '正在按平台课节状态连续学习。';
+      }
       if (page.kind === 'login' || page.kind === 'study-error') {
         stop(page.kind === 'login' ? '登录已失效，请重新登录后继续。' : page.errorCode === '1' ? '其他学习窗口已接管播放，请关闭其他窗口后手动继续。' : '平台学习限制提示，请在当前页面处理后继续。'); notify(message); return;
       }
@@ -555,37 +561,65 @@ export function createController(options) {
           if (!page.media) { waitFor(`player:${active.id}`, '未识别本页媒体播放器'); return; }
           loading = null;
           const key = `${task.id}:${current.id}:${active.id}`;
-          if (!page.media.paused) seenPlaying.add(key);
+          if (!page.media.paused) {
+            seenPlaying.add(key);
+            // Observed playback supersedes any unresolved play request for this section.
+            if (mediaPending?.key === key) mediaPending = null;
+            const resume = resumeAttempts.get(key);
+            if (resume) resume.pausedAt = null;
+          }
           if (page.media.paused && !page.media.ended) {
-            if (seenPlaying.has(key)) { stop('媒体已暂停，请手动播放后再继续。'); notify(message); return; }
             if (mediaPending?.key === key) {
-              if (milliseconds() - mediaPending.since >= 30000) recover('播放请求超时。');
+              if (milliseconds() - mediaPending.since >= 30000) {
+                if (mediaPending.resume) { stop('自动恢复播放超时，请检查播放器后继续。'); notify(message); }
+                else recover('播放请求超时。');
+              }
               return;
             }
-            if (played.has(key)) { recover('媒体未能开始播放。'); return; }
+            const resuming = seenPlaying.has(key);
+            if (resuming) {
+              // Ordinary pauses recover in place, with a bounded budget per section.
+              let resume = resumeAttempts.get(key);
+              if (!resume || (resume.pausedAt === null && milliseconds() - resume.windowStart >= 60000)) {
+                resume = { windowStart: milliseconds(), count: 0, pausedAt: milliseconds(), nextAt: milliseconds() + 2000 };
+                resumeAttempts.set(key, resume);
+              } else if (resume.pausedAt === null) {
+                resume.pausedAt = milliseconds(); resume.nextAt = Math.max(resume.nextAt, milliseconds() + 2000);
+              }
+              if (milliseconds() < resume.nextAt || page.online === false) return;
+              if (resume.count >= 3) { stop('自动恢复播放已尝试 3 次，仍反复暂停，请检查播放器后继续。'); notify(message); return; }
+              resume.count += 1;
+              resume.nextAt = milliseconds() + [5000, 10000, 10000][resume.count - 1];
+              message = `播放已暂停，正在自动恢复播放（${resume.count}/3）。`;
+              resumeNoticeKey = key;
+            } else if (played.has(key)) { recover('媒体未能开始播放。'); return; }
             played.add(key);
-            mediaPending = { key, since: milliseconds() };
+            const request = { key, since: milliseconds(), resume: resuming };
+            mediaPending = request;
             const token = generation;
-            Promise.resolve(adapter.playCurrentMedia(record.automation.mute)).then(success => {
+            // A resume must preserve a same-section manual unmute.
+            Promise.resolve(adapter.playCurrentMedia(resuming ? false : record.automation.mute)).then(success => {
               try {
-                if (destroyed || generation !== token || status !== 'running' || !verify()) return;
-                if (mediaPending?.key === key) mediaPending = null;
+                if (destroyed || generation !== token || status !== 'running' || mediaPending !== request || !verify()) return;
                 if (!isWithinWindow(now(), record.window)) { waitWindow(); return; }
                 const latest = adapter.read();
                 if (pauseForRelearn(latest, current)) return;
                 if (!matchesCourse(latest, current) || latest.activeSectionId !== active.id) return;
+                mediaPending = null;
                 if (success) seenPlaying.add(key);
+                if (resuming) return;
                 if (!success) { if (record.automation.enabled) recover('浏览器未能自动播放。'); else { stop('浏览器未能自动播放，请在当前页手动播放后再继续。'); notify(message); } }
               } catch { if (generation === token && status === 'running') stop('页面读取或操作异常，已暂停并退出学习页，请人工确认。', true); }
             }, () => {
               // Only a native play rejection can use the manual-play pause path.
               try {
-                if (destroyed || generation !== token || status !== 'running' || !verify()) return;
-                if (mediaPending?.key === key) mediaPending = null;
+                if (destroyed || generation !== token || status !== 'running' || mediaPending !== request || !verify()) return;
                 if (!isWithinWindow(now(), record.window)) { waitWindow(); return; }
                 const latest = adapter.read();
                 if (pauseForRelearn(latest, current)) return;
                 if (!matchesCourse(latest, current) || latest.activeSectionId !== active.id) return;
+                mediaPending = null;
+                if (resuming) return;
                 if (record.automation.enabled) recover('播放失败。'); else { stop('播放失败，请手动播放后再继续。'); notify(message); }
               } catch { if (generation === token && status === 'running') stop('页面读取或操作异常，已暂停并退出学习页，请人工确认。', true); }
             });

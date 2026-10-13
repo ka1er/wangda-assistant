@@ -132,8 +132,8 @@ test('播放过的视频跨学习时段重入后，新的暂停播放器可正�
   f.lesson(5); f.page({media:{paused:true,ended:false}}); await f.c.tick(); assert.equal(plays,1); assert.equal(f.c.getState().status,'running'); await f.c.pause();
 });
 
-test('播放成功与下一次轮询之间被平台暂停，停止提醒而非自动抢播', async () => {
+test('播放成功与下一次轮询之间普通暂停，静默恢复而不立即通知', async () => {
   let plays=0; const f=setup({}, {play:()=>{plays++;return Promise.resolve(true);}}); await f.ready(); f.lesson(5); f.page({media:{paused:true,ended:false}});
   await f.c.start(); await f.c.tick(); for(let i=0;i<4;i++) await Promise.resolve(); await f.c.tick();
-  assert.equal(plays,1); assert.equal(f.c.getState().status,'paused'); assert.match(f.c.getState().message,/媒体已暂停/u); assert.ok(!f.actions.includes('leave')); assert.equal(f.notices.length,1);
+  assert.equal(plays,1);assert.equal(f.c.getState().status,'running');await f.elapse(2000);assert.equal(plays,2);assert.ok(!f.actions.includes('leave'));assert.equal(f.notices.length,0);await f.c.pause();
 });

@@ -17,7 +17,7 @@ export function fixture(shared = {}, options = {}) {
     openSubject: item => { actions.push(['subject', item.id]); return true; }, openCourse: item => { actions.push(['course', item.id]); return true; },
     selectSection: id => { actions.push(['section', id]); return true; }, pauseMedia: () => actions.push('pause'), leaveLearning: () => actions.push('leave'),
     playCurrentMedia: () => { actions.push('play'); return options.play ? options.play() : Promise.resolve(true); } };
-  const c = createController({ adapter, storage, locks, now: () => new Date(time), owner: options.owner || Math.random().toString(), setInterval: () => 1, clearInterval: () => {} });
+  const c = createController({ adapter, storage, locks, notify: options.notify, now: () => new Date(time), owner: options.owner || Math.random().toString(), setInterval: () => 1, clearInterval: () => {} });
   return { c, shared, actions, adapter, page: value => { if (value) page = { ...page, ...value }; return page; }, advance: ms => { time += ms; }, config: () => c.setWindow({ start: '09:00', end: '24:00' }) };
 }
 
@@ -218,8 +218,65 @@ test('过时tab与owner丢失不能覆写新任务', async () => {
   const newTask = structuredClone(h.shared['wangda-assistant.task']); const newLease = structuredClone(h.shared['wangda-assistant.lease']); await h.c.tick();
   assert.equal(h.c.getState().status, 'paused'); assert.deepEqual(h.shared['wangda-assistant.task'], newTask); assert.deepEqual(h.shared['wangda-assistant.lease'], newLease); assert.ok(h.actions.includes('leave'));
 });
-test('已见playing后被平台暂停不自动重播', async () => {
-  const f = await ready(fixture()); f.page(course([section()], { media: { ended: false, paused: false } })); await f.c.start(); await f.c.tick(); f.page({ media: { ended: false, paused: true } }); await f.c.tick(); assert.equal(f.c.getState().status, 'paused'); assert.ok(!f.actions.includes('play')); assert.ok(!f.actions.includes('leave'));
+test('普通播放中断先等待再原地恢复，不通知、不离页且保留手动声音状态', async () => {
+  const notices=[],plays=[];const f=await ready(fixture({}, {notify:text=>notices.push(text)}));f.adapter.playCurrentMedia=async mute=>{plays.push(mute);f.page({media:{ended:false,paused:false}});return true;};
+  f.page(course([section()],{media:{ended:false,paused:false}}));await f.c.start();await f.c.tick();f.page({media:{ended:false,paused:true}});await f.c.tick();assert.equal(f.c.getState().status,'running');assert.equal(plays.length,0);await elapse(f,2000);
+  assert.deepEqual(plays,[false]);assert.equal(f.c.getState().status,'running');assert.equal(f.actions.includes('leave'),false);assert.equal(notices.length,0);assert.deepEqual(f.c.getState().tasks[0].done,[]);f.c.destroy();
+});
+
+test('普通暂停恢复失败有退避与三次预算，耗尽才停止并通知一次', async () => {
+  for(const reject of [false,true]){const notices=[];const f=await ready(fixture({}, {notify:text=>notices.push(text),play:()=>reject?Promise.reject(Error('blocked')):Promise.resolve(false)}));
+    f.page(course([section()],{media:{ended:false,paused:false}}));await f.c.start();await f.c.tick();f.page({media:{ended:false,paused:true}});await f.c.tick();await elapse(f,2000);assert.equal(f.actions.filter(x=>x==='play').length,1);assert.equal(notices.length,0);await elapse(f,4000);assert.equal(f.actions.filter(x=>x==='play').length,1);await elapse(f,24000);
+    assert.equal(f.actions.filter(x=>x==='play').length,3);assert.equal(f.c.getState().status,'paused');assert.match(f.c.getState().message,/自动恢复.*3/u);assert.equal(notices.length,1);const before=[...f.actions];await elapse(f,60000);assert.deepEqual(f.actions,before);f.c.destroy();
+  }
+});
+
+test('恢复等待期间助手暂停、平台错误、离页和时间边界均不再播放', async () => {
+  for(const reason of ['pause','error','navigate','window']){const f=await ready(fixture());if(reason==='window')await f.c.setWindow({start:'09:00',end:'10:01'});
+    f.page(course([section()],{media:{ended:false,paused:false}}));await f.c.start();await f.c.tick();if(reason==='window')f.advance(59000);f.page({media:{ended:false,paused:true}});await f.c.tick();
+    if(reason==='pause')await f.c.pause();if(reason==='error')f.page({kind:'study-error',errorCode:'1',route:'#/study/errors/c&1'});if(reason==='navigate')f.page({kind:'home',route:'#/home'});await elapse(f,4000);assert.equal(f.c.getState().status,'paused');assert.equal(f.actions.includes('play'),false);f.c.destroy();
+  }
+});
+
+test('旧播放Promise晚到不清除新恢复请求，新请求超时后不接受晚到成功', async () => {
+  const settlements=[];const f=await ready(fixture({}, {play:()=>new Promise(resolve=>settlements.push(resolve))}));f.page(course([section()],{media:{ended:false,paused:true}}));await f.c.start();await f.c.tick();f.page({media:{ended:false,paused:false}});await f.c.tick();f.page({media:{ended:false,paused:true}});await f.c.tick();await elapse(f,2000);assert.equal(settlements.length,2);
+  settlements[0](false);for(let i=0;i<10;i++)await Promise.resolve();assert.equal(f.c.getState().status,'running');await elapse(f,29000);assert.equal(f.c.getState().status,'running');await elapse(f,1000);assert.equal(f.c.getState().status,'paused');assert.match(f.c.getState().message,/自动恢复.*超时/u);const before=[...f.actions];settlements[1](true);for(let i=0;i<10;i++)await Promise.resolve();assert.deepEqual(f.actions,before);f.c.destroy();
+});
+
+test('间隔超过一分钟的普通暂停可重新获得恢复预算', async () => {
+  const f=await ready(fixture());let plays=0;f.adapter.playCurrentMedia=async()=>{plays++;f.page({media:{ended:false,paused:false}});return true;};f.page(course([section()],{media:{ended:false,paused:false}}));await f.c.start();await f.c.tick();
+  for(let i=0;i<4;i++){f.page({media:{ended:false,paused:true}});await f.c.tick();await elapse(f,2000);await f.c.tick();assert.equal(f.c.getState().status,'running');f.advance(61000);}assert.equal(plays,4);f.c.destroy();
+});
+
+test('持续暂停时缓慢失败跨过一分钟也不能重置三次恢复预算', async () => {
+  const settlements=[],notices=[];const f=await ready(fixture({}, {notify:text=>notices.push(text),play:()=>new Promise(resolve=>settlements.push(resolve))}));
+  f.page(course([section()],{media:{ended:false,paused:false}}));await f.c.start();await f.c.tick();f.page({media:{ended:false,paused:true}});await f.c.tick();await elapse(f,2000);
+  for(let i=0;i<3;i++){assert.equal(settlements.length,i+1);await elapse(f,29000);settlements[i](false);for(let j=0;j<10;j++)await Promise.resolve();await f.c.tick();}
+  assert.equal(settlements.length,3);assert.equal(f.c.getState().status,'paused');assert.equal(notices.length,1);assert.equal(f.actions.includes('leave'),false);f.c.destroy();
+});
+
+test('恢复前自然续播或已结束不额外play，反复短暂停仍受预算限制', async () => {
+  for(const ended of [false,true]){const f=await ready(fixture());f.page(course([section()],{media:{ended:false,paused:false}}));await f.c.start();await f.c.tick();f.page({media:{ended:false,paused:true}});await f.c.tick();f.page({media:{ended,paused:ended}});await elapse(f,4000);assert.equal(f.actions.includes('play'),false);assert.equal(f.c.getState().status,'running');f.c.destroy();}
+  const f=await ready(fixture());let plays=0;f.adapter.playCurrentMedia=async()=>{plays++;f.page({media:{paused:false,ended:false}});return true;};f.page(course([section()],{media:{paused:false,ended:false}}));await f.c.start();await f.c.tick();
+  for(let i=0;i<4;i++){f.page({media:{paused:true,ended:false}});await f.c.tick();await elapse(f,10000);await f.c.tick();}assert.equal(plays,3);assert.equal(f.c.getState().status,'paused');f.c.destroy();
+});
+
+test('恢复等待期间登录失效、重学提示或执行权丢失均不再play', async () => {
+  for(const reason of ['login','relearn','revision','lease']){const f=await ready(fixture());await f.c.setAutomation({enabled:true,resumeOnReload:true});f.page(course([section()],{media:{paused:false,ended:false}}));await f.c.start();await f.c.tick();f.page({media:{paused:true,ended:false}});await f.c.tick();
+    if(reason==='login')f.page({kind:'login',route:'#/login'});if(reason==='relearn')f.page({relearn:{kind:'course',manualRequired:true,reason:'请人工处理。'}});if(reason==='revision')f.shared['wangda-assistant.task'].revision++;if(reason==='lease')f.shared['wangda-assistant.lease'].owner='other';
+    await elapse(f,4000);assert.equal(f.c.getState().status,'paused');assert.equal(f.actions.includes('play'),false);f.c.destroy();
+  }
+});
+
+test('已被实际播放取代的旧请求回调不再读取快照或干扰新恢复请求', async () => {
+  for(const reject of [false,true]){const settlements=[];const f=await ready(fixture({}, {play:()=>new Promise((resolve,fail)=>settlements.push({resolve,fail}))}));f.page(course([section()],{media:{paused:true,ended:false}}));await f.c.start();await f.c.tick();f.page({media:{paused:false,ended:false}});await f.c.tick();f.page({media:{paused:true,ended:false}});await f.c.tick();await elapse(f,2000);assert.equal(settlements.length,2);
+    const read=f.adapter.read;f.adapter.read=()=>{throw Error('temporary snapshot failure');};if(reject)settlements[0].fail(Error('old request'));else settlements[0].resolve(false);for(let i=0;i<10;i++)await Promise.resolve();f.adapter.read=read;assert.equal(f.c.getState().status,'running');await elapse(f,30000);assert.match(f.c.getState().message,/自动恢复.*超时/u);f.c.destroy();
+  }
+});
+
+test('恢复后平台直接切到图文课节，不残留正在恢复播放提示', async () => {
+  const f=await ready(fixture());f.page(course([section()],{media:{paused:false,ended:false}}));await f.c.start();await f.c.tick();f.page({media:{paused:true,ended:false}});await f.c.tick();await elapse(f,2000);assert.match(f.c.getState().message,/正在自动恢复播放/u);
+  f.page(course([section('doc',1)]));await f.c.tick();assert.equal(f.c.getState().status,'running');assert.doesNotMatch(f.c.getState().message,/正在自动恢复播放/u);f.c.destroy();
 });
 test('播放Promise等待时用户暂停，晚到回调无动作', async () => {
   let finish; const f = await ready(fixture({}, { play: () => new Promise(resolve => { finish = resolve; }) })); f.page(course([section()], { media: { ended: false, paused: true } })); await f.c.start(); await f.c.tick(); await f.c.pause(); const before = [...f.actions]; finish(false); await Promise.resolve(); await f.c.tick(); assert.deepEqual(f.actions, before);
@@ -237,7 +294,7 @@ test('播放请求未settle但媒体已playing时长播放不误超时', async (
   const f = await ready(fixture({}, { play: () => new Promise(() => {}) }));
   f.page(course([section()], { media: { ended: false, paused: true } })); await f.c.start(); await f.c.tick();
   f.page({ media: { ended: false, paused: false } }); await elapse(f, 600000); assert.equal(f.c.getState().status, 'running'); assert.ok(!f.actions.includes('leave')); assert.equal(f.actions.filter(x => x === 'play').length, 1);
-  f.page({ media: { ended: false, paused: true } }); await f.c.tick(); assert.equal(f.c.getState().status, 'paused'); assert.match(f.c.getState().message, /媒体已暂停/u); assert.ok(!f.actions.includes('leave')); await f.c.pause();
+  f.page({ media: { ended: false, paused: true } }); await f.c.tick(); await elapse(f,2000); assert.equal(f.c.getState().status, 'running'); assert.equal(f.actions.filter(x=>x==='play').length,2); assert.ok(!f.actions.includes('leave')); await f.c.pause();
 });
 test('播放成功后快照读取异常必须退出学习页，不能误当原生播放失败', async () => {
   let finish; const f = await ready(fixture({}, { play: () => new Promise(resolve => { finish = resolve; }) }));

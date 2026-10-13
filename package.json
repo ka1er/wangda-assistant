@@ -1,6 +1,6 @@
 {
   "name": "wangda-assistant",
-  "version": "0.1.0-beta.12",
+  "version": "0.1.0-beta.13",
   "private": true,
   "type": "module",
   "description": "中移网大多专区任务队列与连续学习助手",
