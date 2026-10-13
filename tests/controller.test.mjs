@@ -26,6 +26,12 @@ export function course(sections, extra = {}) { return { kind: 'course', subjectI
 export function section(id = 'v', type = 5, status = 'learning', active = true) { return { id, courseId: 'c', type, status, active, required: true }; }
 export async function elapse(f, duration) { for (let remaining = duration; remaining > 0; remaining -= 1000) { f.advance(Math.min(remaining, 1000)); await f.c.tick(); } }
 
+test('开始立即尝试目标静音，运行轮询继续应用，暂停和离开后不操作', async () => {
+  const f=await ready(fixture());const muted=[];f.adapter.muteCurrentMedia=(target,run)=>{muted.push([target.id,target.route,run]);return true;};f.page(course([section()],{media:{paused:false,ended:false}}));
+  await f.c.start();assert.equal(muted.length,1);assert.equal(muted[0][0],'c');assert.ok(muted[0][2]);await f.c.tick();assert.equal(muted.length,2);assert.equal(muted[1][2],muted[0][2]);
+  await f.c.pause();await f.c.tick();assert.equal(muted.length,2);await f.c.start();assert.notEqual(muted.at(-1)[2],muted[0][2]);const count=muted.length;f.page({route:'#/home',kind:'home'});await f.c.tick();assert.equal(muted.length,count);f.c.destroy();
+});
+
 test('播放时间仅从已核对课程课节展示，不持久化且切节图文暂停时清除', async () => {
   const f=await ready(fixture());await f.c.start();f.page(course([section()],{media:{paused:false,ended:false,currentTime:42,duration:100}}));await f.c.tick();
   assert.deepEqual(f.c.getState().currentPlayback,{taskId:f.c.getState().activeTaskId,courseId:'c',sectionId:'v',paused:false,ended:false,currentTime:42,duration:100});assert.equal(JSON.stringify(f.shared).includes('currentTime'),false);

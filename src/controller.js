@@ -297,6 +297,10 @@ export function createController(options) {
     if (!page.relearn?.manualRequired || !(matchesCourse(page, current) || (page.kind === 'course-relearn' && page.courseId === current.id) || (['subject', 'subject-relearn'].includes(page.kind) && page.subjectId === task.subject.id))) return false;
     stop(`遇到“重新学习”提示。${page.relearn.reason} 处理后请手动继续队列。`); notify(message); return true;
   };
+  const muteCourse = course => {
+    if (status !== 'running' || !held || !runId) return;
+    try { adapter.muteCurrentMedia?.(course, runId); } catch { /* Muting an unavailable player must not interrupt learning. */ }
+  };
   const start = async (preferred = null) => {
     if (!editable() || !record || !record.tasks.length) return tell('请先添加专题任务。');
     if (!isWithinWindow(now(), record.window) && !record.automation.enabled) return tell('当前不在允许的北京时间学习时段内。');
@@ -312,6 +316,7 @@ export function createController(options) {
     generation += 1; restorePending = false; status = isWithinWindow(now(), record.window) ? 'running' : 'waiting'; needOpen = true; played.clear(); seenPlaying.clear(); retries.clear(); pending = grace = loading = recovery = null;
     message = status === 'waiting' ? `等待学习时段 ${record.window.start}—${record.window.end}（北京时间），到时自动继续。` : '正在按平台课节状态连续学习。';
     if (status === 'waiting') waitWindow();
+    else muteCourse(entry.course);
     watch(); emit(); return true;
   };
   const pause = async () => {
@@ -508,6 +513,7 @@ export function createController(options) {
         }
         stop('页面已离开目标课程，请确认后重新开始。'); return;
       }
+      muteCourse(current);
       if (isDone(task, current.id)) {
         if (!grace || milliseconds() - grace.since >= 6000) nextCourse(page);
         return;

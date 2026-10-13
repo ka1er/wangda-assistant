@@ -38,6 +38,12 @@ function setup() {
   subject(); return { w, c, a, subject, search, course, complete, elapse, collect, panel, root, click, change, add, close };
 }
 
+test('目标课程已自动播放时开始即静音，平台更换播放器后继续静音', async () => {
+  const f=setup();f.subject('s',[['a','未开始',true]]);await f.collect();f.w.location.hash='#/study/course/detail/subject-course/a/6/s';f.course('a',true);const first=f.w.document.querySelector('video');first.volume=.4;
+  await f.c.start();assert.equal(first.muted,true);assert.equal(first.volume,.4);first.muted=false;await f.c.tick();assert.equal(first.muted,false);
+  f.course('a',true);const next=f.w.document.querySelector('video');await f.c.tick();assert.equal(next.muted,true);assert.equal(f.c.getState().tasks[0].done.length,0);f.close();
+});
+
 test('原生视频时间传到当前课程，结束后等待图文，平台全部完成才将专区变灰', async () => {
   const f=setup();f.subject('s',[['a','未开始',true]]);await f.collect();const id=f.c.getState().tasks[0].id;f.panel.open();await f.click(`detail-${id}`);await f.click('start');await f.c.tick();f.course('a',true);
   const media=f.w.document.querySelector('video');Object.defineProperty(media,'currentTime',{value:828});Object.defineProperty(media,'duration',{value:3101});await f.c.tick();
@@ -114,11 +120,11 @@ test('真实面板和adapter：搜索确认添加两专区，状态预选和手�
   await f.change(`[data-task-detail="${firstId}"] [data-course="u"]`, true); await f.change(`[data-task-detail="${firstId}"] [data-course="u"]`, false);
   const start = f.root.querySelector('[name="start"]'); start.value = '10:00'; start.dispatchEvent(new f.w.Event('input')); await f.click('start'); assert.deepEqual(f.c.getState().window, { start: '10:00', end: '24:00' });
   assert.equal(f.c.getState().status, 'running'); await f.c.tick(); assert.match(f.w.location.hash, /subject-course\/b\/6\/s$/u);
-  f.course('b', true); await f.c.tick(); assert.equal(f.c.getState().currentSectionTitle, 'v'); assert.match(f.root.querySelector('.status').textContent, /当前课节：v/u);
+  f.course('b', true); await f.c.tick(); assert.equal(f.c.getState().currentSectionTitle, 'v'); assert.match(f.root.querySelector('[data-course="b"]').closest('label').textContent, /课节 · v/u);
   f.complete('v'); await f.c.tick(); await f.elapse(6000); assert.equal(f.a.read().activeSectionId, 'doc'); await f.c.tick();
   f.complete('doc'); await f.c.tick(); await f.elapse(6000); assert.match(f.w.location.hash, /subject-course\/c\/6\/s$/u);
   f.course('c'); await f.c.tick(); f.complete('doc'); await f.c.tick(); await f.elapse(6000); assert.match(f.w.location.hash, /subject-course\/x\/6\/t$/u);
-  assert.match(f.root.querySelector('header').textContent, /专区完成 1\/2/u); f.course('x'); await f.c.tick(); f.complete('doc'); await f.c.tick();
+  assert.match(f.root.querySelector('header').textContent, /总完成 2\/3 门/u); f.course('x'); await f.c.tick(); f.complete('doc'); await f.c.tick();
   assert.equal(f.c.getState().status, 'complete'); assert.equal(f.w.location.hash, '#/study/subject/detail/t'); assert.deepEqual(f.c.getState().tasks.map(item => item.done), [['b', 'c'], ['x']]);
   await f.click(`refresh-${firstId}`); f.subject('s', [['a', '未开始', true], ['b', '未开始', false], ['c', '已完成', true], ['u', '未完成', false], ['new', '已完成', true]]); await f.c.tick();
   assert.deepEqual(f.c.getState().tasks[0].done, ['b', 'c']); assert.equal(f.c.getState().tasks[0].courses.find(item => item.id === 'a').selected, false); assert.equal(f.c.getState().tasks[0].courses.find(item => item.id === 'new').selected, false); f.close();

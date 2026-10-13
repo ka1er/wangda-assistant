@@ -13,6 +13,7 @@ export function createPanel(win, controller, version) {
   element('style', '.task-head{display:flex;align-items:flex-start;gap:7px}.task-head h3{flex:1;min-width:0}.sort-actions{display:flex;gap:4px;flex-shrink:0}.sort-actions button{padding:2px 5px;font-size:12px}.sort-handle{cursor:grab}.sort-handle:active{cursor:grabbing}article[data-drop=before]{border-top:3px solid #176ac2}article[data-drop=after]{border-bottom:3px solid #176ac2}article[data-dragging]{opacity:.6}');
   element('style', 'select,input[type=search]{font:inherit;width:100%;border:1px solid #b8c9d9;border-radius:4px;background:#fff;color:#17344d;padding:6px}');
   element('style', 'article[data-state=active]{background:#edf6ff;border-color:#72a9df;box-shadow:inset 3px 0 #176ac2}article[data-state=completed]{background:#f3f4f6;border-color:#d8dee5;color:#65727f}article[data-state=attention]{background:#fff9ef;border-color:#e9c78f}.task-priority{margin:3px 0 7px}.task-current{font-size:12px;color:#155a9b;white-space:pre-wrap}.course[data-state=active]{background:#dfedfc;border-radius:4px;padding:8px;border-left:3px solid #176ac2}.course[data-state=active]>span>span,.course[data-state=active] small{color:#155a9b}.course[data-state=active]>span>span{font-weight:600}.course[data-state=completed]{color:#6b7885}.course[data-state=attention] small{color:#8a5716}progress{display:block;width:100%;height:6px;margin:6px 0 9px;border:0;border-radius:4px;overflow:hidden;background:#e1e8ef;accent-color:#176ac2}progress::-webkit-progress-bar{background:#e1e8ef}progress::-webkit-progress-value{background:#176ac2}progress::-moz-progress-bar{background:#176ac2}article[data-state=completed] progress{accent-color:#8b98a5}article[data-state=completed] progress::-webkit-progress-value{background:#8b98a5}article[data-state=completed] progress::-moz-progress-bar{background:#8b98a5}.course progress{margin-bottom:2px}.playback-time{margin-top:4px;font-variant-numeric:tabular-nums}');
+  element('style', '.compact-course,.course-caption,.current-name{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}.course>span{min-width:0}.one-line{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.task-current{margin:8px 0}.current-name{font-weight:600}.task-current small{color:inherit}.compact-notice{margin-top:5px;white-space:pre-wrap;overflow-wrap:anywhere}.task-priority{margin-bottom:3px}.task-current .playback-time{margin-top:3px}');
   const header = element('header', '', shell);
   const headline = element('div', '', header); headline.className = 'headline';
   const title = element('div', '', headline); element('strong', '网大助手', title); element('small', ` ${version}`, title);
@@ -33,11 +34,12 @@ export function createPanel(win, controller, version) {
   const runButton = button('run-toggle', '开始', headerButtons, () => isRunning(controller.getState()) ? controller.pause() : startQueue(), false);
   const toggle = button('toggle', '展开', headerButtons, () => setOpen(body.hidden), false); toggle.setAttribute('aria-expanded', 'false');
   const progress = element('div', '', header); progress.className = 'progress'; progress.setAttribute('role', 'status'); progress.setAttribute('aria-live', 'polite');
-  const compact = element('div', '', header); compact.className = 'muted'; compact.style.cssText = 'white-space:pre-wrap;overflow-wrap:anywhere;max-height:4.5em;overflow:auto;';
+  const compact = element('div', '', header); compact.className = 'muted compact-course';
   const compactTime = element('div', '', header); compactTime.className = 'muted playback-time'; compactTime.dataset.playbackTime = '';
+  const compactNotice = element('div', '', header); compactNotice.className = 'muted compact-notice';
   const body = element('div', '', shell); body.className = 'body'; body.hidden = true;
   const execution = element('div', '', body); execution.className = 'status';
-  const currentText = element('div', '', execution); const message = element('div', '', execution);
+  const message = element('div', '', execution);
   const problemBox = element('div', '', body); problemBox.className = 'problem'; problemBox.dataset.problem = '';
   const problemText = element('div', '', problemBox); const problemActions = element('div', '', problemBox); problemActions.className = 'buttons';
   button('retry', '重试本课程', problemActions, () => controller.retry(latest.problem?.taskId, latest.problem?.courseId));
@@ -45,7 +47,7 @@ export function createPanel(win, controller, version) {
   const queueView = element('div', '', body); queueView.dataset.view = 'queue';
   const queueHeading = element('div', '', queueView); queueHeading.className = 'headline'; element('h2', '任务队列', queueHeading);
   button('add', '添加专区', queueHeading, () => { adding = true; render(controller.getState()); target.focus(); });
-  element('p', '当前专区置顶，完成专区沉底。拖动 ↕ 调整执行优先级；当前课程继续，下一门按优先级执行。', queueView).className = 'muted';
+  element('p', '拖动 ↕ 调整优先级', queueView).className = 'muted';
   const empty = element('p', '还没有任务，点击“添加专区”开始。', queueView); empty.className = 'muted';
   const taskList = element('div', '', queueView);
   const queueControls = element('div', '', queueView); queueControls.className = 'buttons';
@@ -91,7 +93,7 @@ export function createPanel(win, controller, version) {
   button('diagnose', '页面诊断', utility, () => { diagnostic.textContent = JSON.stringify(controller.diagnose(), null, 2); }, false);
   const diagnostic = element('pre', '', body);
   const taskNodes = new Map(); let candidateSignature = ''; let draftSubjectId = null;
-  const setOpen = open => { body.hidden = !open; toggle.textContent = open ? '收起' : '展开'; toggle.setAttribute('aria-expanded', String(open)); };
+  const setOpen = open => { body.hidden = !open; toggle.textContent = open ? '收起' : '展开'; toggle.setAttribute('aria-expanded', String(open)); render(controller.getState()); };
   const eligible = task => task.courses.filter(course => course.selected && (task.scope === 'all' || course.required));
   const isDone = (task, id) => Boolean(task?.done.includes(id) && !task.recheck?.includes(id));
   const counts = task => { const selected = eligible(task); return { selected: selected.length, done: selected.filter(course => isDone(task, course.id)).length, skipped: selected.filter(course => task.skipped.includes(course.id)).length, deferred: task.deferred?.length || 0 }; };
@@ -115,7 +117,8 @@ export function createPanel(win, controller, version) {
     return latest.currentSectionTitle ? '学习中' : '正在进入课程';
   };
   const clock = value => { const seconds = Math.floor(value); const minutes = Math.floor(seconds / 60); return minutes >= 60 ? `${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}` : `${String(minutes).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`; };
-  const playbackText = value => Number.isFinite(value?.currentTime) && Number.isFinite(value?.duration) && value.currentTime >= 0 && value.duration > 0 ? `当前课节播放 ${clock(Math.min(value.currentTime, value.duration))} / ${clock(value.duration)}` : '';
+  const playbackText = value => Number.isFinite(value?.currentTime) && Number.isFinite(value?.duration) && value.currentTime >= 0 && value.duration > 0 ? `${clock(Math.min(value.currentTime, value.duration))} / ${clock(value.duration)}` : '';
+  const quietMessages = new Set(['已暂停', '已完成', '执行中', '学习中', '已暂停，确认配置和课程后点击开始。', '已暂停，继续学习需手动点击开始。', '正在按平台课节状态连续学习。', '等待平台确认当前课节完成。', '所选课程已全部完成。', '已进入学习时段，正在继续队列。', '正在重新进入课程。']);
   const saveWindow = async () => {
     const next = { start: fields.start.value.trim(), end: fields.end.value.trim() };
     if (JSON.stringify(next) !== JSON.stringify(controller.getState().window) && !await controller.setWindow(next)) return false;
@@ -146,7 +149,7 @@ export function createPanel(win, controller, version) {
   function createCourseList(parent, taskId = null) {
     const modeLabel = element('label', '学习范围', parent); const mode = element('select', '', modeLabel); mode.name = `course-mode-${taskId || 'draft'}`; editors.add(mode);
     for (const [value, text] of [['all-pending', '专区全部待学（可调整勾选）'], ['specific', '指定课程（只学手动选择）']]) { const option = element('option', text, mode); option.value = value; }
-    element('p', '切换范围会重设勾选；指定课程先清空，再选择需要的课程。', parent).className = 'muted';
+    element('p', '切换范围会重设勾选。', parent).className = 'muted';
     mode.addEventListener('change', async () => {
       if (mode.disabled) return; busy.add(mode); mode.disabled = true;
       try { await controller.setTaskMode(taskId, mode.value); } catch { diagnostic.textContent = '学习范围未保存，请重试。'; }
@@ -155,7 +158,7 @@ export function createPanel(win, controller, version) {
     const filterLabel = element('label', '筛选课程名称', parent); const filter = element('input', '', filterLabel); filter.type = 'search'; filter.name = `course-filter-${taskId || 'draft'}`; filter.placeholder = '输入课程名称或关键词';
     filter.addEventListener('input', () => render(controller.getState()));
     const selection = element('p', '', parent); selection.className = 'muted';
-    element('p', '筛选不会取消隐藏课程的勾选；批量选择作用于整份清单。', parent).className = 'muted';
+    element('p', '筛选不会取消隐藏勾选；批量操作作用于整份清单。', parent).className = 'muted';
     const controls = element('div', '', parent); controls.className = 'buttons';
     for (const [mode, caption] of [['unfinished', '全部未完成'], ['required', '仅必修'], ['none', '清空选择'], ['completed', '勾选已完成']]) button(`select-${mode}-${taskId || 'draft'}`, caption, controls, () => controller.selectCourses(taskId, mode));
     const pending = element('div', '', parent); const completed = element('details', '', parent); completed.dataset.completed = '';
@@ -175,7 +178,8 @@ export function createPanel(win, controller, version) {
       if (!row) {
         const label = element('label', '', view.pending); label.className = 'course';
         const input = element('input', '', label); input.type = 'checkbox'; input.dataset.course = course.id; editors.add(input);
-        const text = element('span', '', label); const caption = element('span', '', text); const meta = element('small', '', text);
+        const text = element('span', '', label); const caption = element('span', '', text); caption.className = 'course-caption'; const meta = element('small', '', text);
+        const section = element('small', '', text); section.className = 'one-line';
         const time = element('small', '', text); time.className = 'playback-time'; const playback = element('progress', '', text); playback.setAttribute('aria-label', '当前课节播放进度');
         input.addEventListener('change', async () => {
           if (input.disabled) return;
@@ -185,7 +189,7 @@ export function createPanel(win, controller, version) {
           finally { busy.delete(input); render(controller.getState()); }
         });
         const retry = item ? button(`retry-${item.id}-${course.id}`, '重试', label, () => controller.retry(item.id, course.id)) : null;
-        row = { label, input, caption, meta, retry, time, playback }; view.nodes.set(course.id, row);
+        row = { label, input, caption, meta, section, retry, time, playback }; view.nodes.set(course.id, row);
       }
       const recheck = item?.recheck?.includes(course.id);
       const current = item && currentTask(item) && latest.currentCourseId === course.id && !isDone(item, course.id);
@@ -196,7 +200,8 @@ export function createPanel(win, controller, version) {
       const playback = current ? playbackFor(item, course.id) : null; const timeText = playbackText(playback);
       row.time.textContent = timeText; row.time.hidden = !timeText; row.playback.hidden = !timeText;
       row.playback.max = timeText ? playback.duration : 1; row.playback.value = timeText ? Math.min(playback.currentTime, playback.duration) : 0;
-      row.caption.textContent = course.title; row.meta.textContent = `${status} · ${course.required ? '必修' : '选修'}`; row.input.checked = course.selected;
+      row.caption.textContent = course.title; row.caption.title = course.title; row.meta.textContent = `${status} · ${course.required ? '必修' : '选修'}`; row.input.checked = course.selected;
+      row.section.textContent = current && latest.currentSectionTitle ? `课节 · ${latest.currentSectionTitle}` : ''; row.section.title = latest.currentSectionTitle || ''; row.section.hidden = !row.section.textContent;
       row.input.disabled = latest.unavailable || ['running', 'preparing', 'waiting'].includes(latest.status) || Boolean(item?.scope === 'required' && !course.required);
       row.input.dataset.legacyDisabled = String(Boolean(item?.scope === 'required' && !course.required));
       if (row.retry) row.retry.hidden = !skipped && !deferred;
@@ -248,7 +253,10 @@ export function createPanel(win, controller, version) {
         const priority = element('p', '', article); priority.className = 'task-priority muted';
         const summary = element('p', '', article); summary.dataset.taskSummary = item.id;
         const completion = element('progress', '', article); completion.dataset.taskProgress = item.id;
-        const current = element('p', '', article); current.className = 'task-current';
+        const current = element('div', '', article); current.className = 'task-current';
+        const currentName = element('div', '', current); currentName.className = 'current-name';
+        const currentSection = element('small', '', current); currentSection.className = 'one-line';
+        const currentTime = element('small', '', current); currentTime.className = 'playback-time';
         const detailButton = button(`detail-${item.id}`, '查看详情', article, () => { detail.hidden = !detail.hidden; detailButton.textContent = detail.hidden ? '查看详情' : '收起详情'; detailButton.setAttribute('aria-expanded', String(!detail.hidden)); }, false); detailButton.setAttribute('aria-expanded', 'false');
         const detail = element('div', '', article); detail.dataset.taskDetail = item.id; detail.hidden = true;
         const legacy = element('p', '旧任务仅执行必修课程和课节；需要包含选修可移出后重新添加专区。', detail); legacy.className = 'muted';
@@ -256,7 +264,7 @@ export function createPanel(win, controller, version) {
         const refresh = button(`refresh-${item.id}`, '更新清单', actions, () => controller.refreshTask(item.id));
         button(`recheck-${item.id}`, '复查所选已完成课程', actions, () => controller.recheckCompleted(item.id));
         button(`remove-${item.id}`, '移出队列', actions, () => controller.removeTask(item.id));
-        view = { article, title, priority, summary, completion, current, detail, legacy, courses, refresh, handle, up, down }; taskNodes.set(item.id, view);
+        view = { article, title, priority, summary, completion, current, currentName, currentSection, currentTime, detail, legacy, courses, refresh, handle, up, down }; taskNodes.set(item.id, view);
       }
       view.title.textContent = item.subject?.title || item.target;
       view.handle.setAttribute('aria-label', `拖动排序：${item.subject?.title || item.target}`);
@@ -267,11 +275,17 @@ export function createPanel(win, controller, version) {
       const total = counts(item);
       const status = !item.subject ? '尚未读取专区，请移出后重新添加' : !total.selected ? '尚未选择课程' : current ? executionLabel(item) : total.deferred ? '有待处理课程' : item.skipped.length ? '有跳过课程待重试' : item.recheck?.length ? '有待复查课程' : completed ? '全部完成' : '待学习';
       view.article.dataset.state = current ? 'active' : completed ? 'completed' : total.deferred || item.skipped.length || item.recheck?.length ? 'attention' : 'pending';
-      view.priority.textContent = completed ? '✓ 全部完成' : `${current ? '当前执行 · ' : ''}执行优先级 ${priorityIndex + 1}`;
-      view.summary.textContent = `${item.selectionMode === 'specific' ? '指定课程' : '专区待学'} · 所选 ${total.selected} · 完成 ${total.done} · 待处理 ${total.deferred} · 跳过 ${total.skipped} · ${status}`;
+      view.priority.textContent = `优先级 ${priorityIndex + 1}`; view.priority.hidden = completed;
+      const issues = [['待处理', total.deferred], ['跳过', item.skipped.length], ['待复查', item.recheck?.length || 0]].filter(([, count]) => count).map(([name, count]) => `${name} ${count}`);
+      view.summary.textContent = completed ? `已完成 ${total.selected} 门` : `${status} · 完成 ${total.done}/${total.selected} 门${issues.length ? ` · ${issues.join(' · ')}` : ''}`;
       view.completion.max = total.selected || 1; view.completion.value = total.done; view.completion.hidden = !total.selected; view.completion.setAttribute('aria-label', `专区已完成 ${total.done} / ${total.selected} 门`);
-      view.current.hidden = !current; view.current.textContent = current ? [`当前课程：${item.courses.find(course => course.id === state.currentCourseId)?.title || '正在确认课程'}`, playbackText(playbackFor(item, state.currentCourseId))].filter(Boolean).join('\n') : '';
+      view.currentName.textContent = current ? item.courses.find(course => course.id === state.currentCourseId)?.title || '正在确认课程' : ''; view.currentName.title = view.currentName.textContent;
+      view.currentSection.textContent = current && state.currentSectionTitle ? `课节 · ${state.currentSectionTitle}` : ''; view.currentSection.title = state.currentSectionTitle || ''; view.currentSection.hidden = !view.currentSection.textContent;
+      view.currentTime.textContent = current ? playbackText(playbackFor(item, state.currentCourseId)) : ''; view.currentTime.hidden = !view.currentTime.textContent;
       view.legacy.hidden = item.scope !== 'required'; view.refresh.dataset.legacyDisabled = String(!item.subject); updateCourses(view.courses, item.courses, item);
+      const activeRow = view.courses.nodes.get(state.currentCourseId)?.label; const folded = activeRow?.closest('details[data-completed]');
+      const rowVisible = !view.detail.hidden && activeRow && !activeRow.hidden && (!folded || folded.open);
+      view.current.hidden = !current || Boolean(rowVisible);
     }
     const display = [...state.tasks.filter(item => currentTask(item, state)), ...state.tasks.filter(item => !currentTask(item, state) && !completeTask(item)), ...state.tasks.filter(completeTask)];
     for (const [index, item] of display.entries()) { const node = taskNodes.get(item.id).article; if (taskList.children[index] !== node) taskList.insertBefore(node, taskList.children[index] || null); }
@@ -279,13 +293,15 @@ export function createPanel(win, controller, version) {
   function render(state) {
     latest = state;
     const running = isRunning(state);
-    const active = state.tasks.find(item => item.id === state.activeTaskId); const total = active ? counts(active) : { done: 0, selected: 0 };
+    const active = state.tasks.find(item => item.id === state.activeTaskId);
     const labels = { paused: '已暂停', preparing: '正在准备', running: '学习中', complete: '已完成', retrying: '正在重试', waiting: '等待学习时段', offline: '等待网络', resuming: '正在恢复' };
     const all = state.tasks.reduce((sum, task) => { const c = counts(task); return { done: sum.done + c.done, selected: sum.selected + c.selected, deferred: sum.deferred + c.deferred }; }, { done: 0, selected: 0, deferred: 0 });
-    progress.textContent = `${labels[state.phase || state.status] || state.status} · 专区完成 ${state.tasks.filter(completeTask).length}/${state.tasks.length} · 本任务完成 ${total.done}/${total.selected} 门 · 总完成 ${all.done}/${all.selected}${all.deferred ? ` · 待处理 ${all.deferred}` : ''}`;
-    compact.textContent = [active?.courses.find(course => course.id === state.currentCourseId)?.title || '', state.message].filter(Boolean).join('\n');
-    compactTime.textContent = active ? playbackText(playbackFor(active, state.currentCourseId)) : ''; compactTime.hidden = !compactTime.textContent;
-    currentText.textContent = [`当前专区：${active?.subject?.title || '—'}`, `当前课程：${active?.courses.find(course => course.id === state.currentCourseId)?.title || '—'}`, `当前课节：${state.currentSectionTitle || '—'}`].join('\n'); message.textContent = state.message;
+    progress.textContent = `${labels[state.phase || state.status] || state.status} · 总完成 ${all.done}/${all.selected} 门${all.deferred ? ` · 待处理 ${all.deferred}` : ''}`;
+    compact.textContent = active?.courses.find(course => course.id === state.currentCourseId)?.title || ''; compact.title = compact.textContent; compact.hidden = !body.hidden || !compact.textContent;
+    compactTime.textContent = active ? playbackText(playbackFor(active, state.currentCourseId)) : ''; compactTime.hidden = !body.hidden || !compactTime.textContent;
+    const notice = quietMessages.has(state.message) ? '' : state.message;
+    message.textContent = notice; execution.hidden = !notice || notice === state.problem?.reason;
+    compactNotice.textContent = notice || state.problem?.reason || ''; compactNotice.hidden = !body.hidden || !compactNotice.textContent;
     problemBox.hidden = !state.problem;
     if (state.problem) { const item = state.tasks.find(task => task.id === state.problem.taskId); problemText.textContent = `${item?.subject?.title || item?.target || '专区'} · ${item?.courses.find(course => course.id === state.problem.courseId)?.title || '课程'}\n${state.problem.reason}`; }
     if (state.draft) adding = true;

@@ -266,7 +266,7 @@ test('播放只对暂停且未结束媒体尝试一次，失败返回false', asy
   const { window } = dom('<video></video>');
   const media = window.document.querySelector('video');
   let plays = 0;
-  media.play = async () => { plays += 1; };
+  media.play = async () => { assert.equal(media.muted,true); plays += 1; };
   const adapter = createAdapter(window);
   assert.equal(await adapter.playCurrentMedia(), true);
   assert.equal(plays, 1);
@@ -280,6 +280,21 @@ test('播放只对暂停且未结束媒体尝试一次，失败返回false', asy
   Object.defineProperty(media, 'paused', { configurable: true, value: true });
   media.play = async () => { throw new Error('autoplay blocked'); };
   assert.equal(await adapter.playCurrentMedia(), false);
+});
+
+test('目标音视频按运行与课节静音一次，手动开声保持，新媒体和新课节重新静音', () => {
+  const {window}=dom(chapters(section('one',{active:true,type:5}))+'<video></video><audio></audio>');const a=createAdapter(window);const target={id:'course-1',route:courseRoute};const video=window.document.querySelector('video');video.volume=.6;
+  assert.equal(typeof a.muteCurrentMedia,'function');assert.equal(a.muteCurrentMedia(target,'run-1'),true);assert.equal(video.muted,true);assert.equal(window.document.querySelector('audio').muted,true);assert.equal(video.volume,.6);
+  video.muted=false;a.muteCurrentMedia(target,'run-1');assert.equal(video.muted,false);
+  const next=window.document.createElement('video');window.document.body.append(next);a.muteCurrentMedia(target,'run-1');assert.equal(next.muted,true);assert.equal(video.muted,false);
+  window.document.querySelector('dl').id='D597show-sectionstwo';a.muteCurrentMedia(target,'run-1');assert.equal(video.muted,true);video.muted=false;a.muteCurrentMedia(target,'run-2');assert.equal(video.muted,true);window.close();
+});
+
+test('静音不操作无关课程、同课不同专区、图文或未知课节以及 iframe', () => {
+  const {window}=dom(chapters(section('one',{active:true,type:5}))+'<video></video><iframe src="about:blank"></iframe>');const a=createAdapter(window);const video=window.document.querySelector('video');const target={id:'course-1',route:courseRoute};
+  assert.equal(typeof a.muteCurrentMedia,'function');for(const candidate of [{...target,id:'other'},{...target,route:courseRoute.replace(sid,'other')}]){assert.equal(a.muteCurrentMedia(candidate,'r'),false);assert.equal(video.muted,false);}
+  const nested=window.document.querySelector('iframe').contentDocument.createElement('video');window.document.querySelector('iframe').contentDocument.body.append(nested);a.muteCurrentMedia(target,'r');assert.equal(nested.muted,false);video.muted=false;
+  window.document.querySelector('dl').setAttribute('data-sectionType','1');assert.equal(a.muteCurrentMedia(target,'r2'),false);assert.equal(video.muted,false);window.location.hash='#/home';assert.equal(a.muteCurrentMedia(target,'r3'),false);window.close();
 });
 
 test('无原生媒体或非课程页不能尝试播放', async () => {

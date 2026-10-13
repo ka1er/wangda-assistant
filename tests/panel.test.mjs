@@ -20,6 +20,26 @@ function fixture(overrides = {}) {
   const close = () => { panel.destroy(); dom.window.close(); };
   return { dom, state, calls, emit, root, click, close, panel };
 }
+const visibleText = node => [node, ...node.querySelectorAll('*')].filter(n => n.tagName !== 'STYLE' && !n.closest?.('[hidden]')).flatMap(n => [...n.childNodes].filter(child => child.nodeType === 3).map(child => child.textContent)).join(' ');
+
+test('展开仅卡片显示当前课程，打开详情转移到课程行，收起显示简要时间', async () => {
+  const title='示例课程：信息整理与协作应用';const t=task('t',[{...course('v'),title}]);const f=fixture({tasks:[t],status:'running',activeTaskId:'t',currentCourseId:'v',currentSectionTitle:'示例视频课节',message:'正在按平台课节状态连续学习。',currentPlayback:{taskId:'t',courseId:'v',sectionId:'s',paused:false,ended:false,currentTime:61,duration:120}});f.panel.open();
+  assert.doesNotMatch(visibleText(f.root.querySelector('header')),/信息整理|01:01/u);assert.equal(f.root.querySelector('.status').hidden,true);assert.equal(visibleText(f.root).split(title).length-1,1);assert.doesNotMatch(visibleText(f.root),/待处理 0|跳过 0|所选 1|专区待学|正在按平台课节/u);
+  await f.click('detail-t');assert.equal(f.root.querySelector('.task-current').hidden,true);assert.equal(visibleText(f.root).split(title).length-1,1);assert.match(visibleText(f.root),/示例视频课节.*01:01 \/ 02:00/su);
+  const filter=f.root.querySelector('[name="course-filter-t"]');filter.value='不匹配';filter.dispatchEvent(new f.dom.window.Event('input'));assert.equal(f.root.querySelector('.task-current').hidden,false);assert.equal(visibleText(f.root).split(title).length-1,1);filter.value='';filter.dispatchEvent(new f.dom.window.Event('input'));assert.equal(f.root.querySelector('.task-current').hidden,true);
+  await f.click('toggle');const header=f.root.querySelector('header');assert.equal(visibleText(header).split(title).length-1,1);assert.match(visibleText(header),/总完成 0\/1.*01:01 \/ 02:00/su);assert.equal(f.root.querySelector('.compact-course').title,title);f.close();
+});
+
+test('精简面板保留未知错误、断网重试及人工原因，异常块只显示一次', async () => {
+  const f=fixture({tasks:[task()],activeTaskId:'t',currentCourseId:'a',status:'paused',message:'页面已离开目标课程，请确认后重新开始。'});f.panel.open();assert.match(visibleText(f.root),/页面已离开目标课程/u);assert.equal(f.root.querySelector('.status').hidden,false);
+  f.emit({status:'running',phase:'retrying',message:'正在等待重试 1/3。'});assert.match(visibleText(f.root),/重试 1\/3/u);await f.click('toggle');assert.match(visibleText(f.root.querySelector('header')),/重试 1\/3/u);
+  f.emit({status:'paused',phase:'paused',problem:{taskId:'t',courseId:'a',reason:'请人工完成课后测验'},message:'请人工完成课后测验'});await f.click('toggle');assert.equal(visibleText(f.root).split('请人工完成课后测验').length-1,1);f.close();
+});
+
+test('旧人工问题不能遮住最新重学提示，内容相同时才去重', async () => {
+  const f=fixture({tasks:[task()],status:'paused',activeTaskId:'t',currentCourseId:'a',problem:{taskId:'t',courseId:'a',reason:'请人工完成旧课后测验'},message:'遇到重新学习提示，请核对归档恢复记录'});f.panel.open();
+  assert.match(visibleText(f.root),/归档恢复记录/u);assert.match(visibleText(f.root),/旧课后测验/u);await f.click('toggle');assert.match(visibleText(f.root.querySelector('header')),/归档恢复记录/u);f.close();
+});
 
 test('当前专区置顶、完成专区沉底且不改保存顺序，暂停与完成后正确分组', async () => {
   const done=task('done',[course('d')]);done.done=['d'];
@@ -50,7 +70,7 @@ test('已完成当前课等待切换时专区仍置顶，课程行保留完成�
 test('当前课程覆盖旧卡片状态，展示课节时间但播放结束不计平台完成', async () => {
   const t=task('t',[course('v')]);const playback={taskId:'t',courseId:'v',sectionId:'s',paused:false,ended:false,currentTime:828,duration:3101};
   const f=fixture({tasks:[t],activeTaskId:'t',currentCourseId:'v',currentSectionTitle:'视频课节',currentPlayback:playback,status:'running'});f.panel.open();await f.click('detail-t');
-  const row=f.root.querySelector('[data-course="v"]').closest('label');assert.equal(row.dataset.state,'active');assert.match(row.textContent,/正在播放/u);assert.doesNotMatch(row.textContent,/未开始/u);assert.match(row.textContent,/13:48 \/ 51:41/u);assert.match(row.textContent,/当前课节播放/u);assert.equal(row.querySelector('progress').value,828);assert.equal(row.querySelector('progress').max,3101);
+  const row=f.root.querySelector('[data-course="v"]').closest('label');assert.equal(row.dataset.state,'active');assert.match(row.textContent,/正在播放/u);assert.doesNotMatch(row.textContent,/未开始/u);assert.match(row.textContent,/13:48 \/ 51:41/u);assert.match(row.textContent,/课节 · 视频课节/u);assert.equal(row.querySelector('progress').value,828);assert.equal(row.querySelector('progress').max,3101);
   assert.match(f.root.querySelector('header [data-playback-time]').textContent,/13:48 \/ 51:41/u);
   f.emit({currentPlayback:{...playback,currentTime:3101,ended:true,paused:true}});assert.match(row.textContent,/等待平台确认完成/u);assert.match(f.root.querySelector('[data-task-summary="t"]').textContent,/完成 0/u);assert.equal(f.root.querySelector('[data-task-progress="t"]').value,0);
   f.emit({status:'running',phase:'retrying',currentPlayback:null});assert.match(row.textContent,/正在重试/u);assert.equal(row.querySelector('progress').hidden,true);
@@ -126,11 +146,11 @@ test('首页仅队列，添加搜索候选和草稿分阶段展示，加入后�
 });
 
 test('标题收起时显示进度，运行可暂停，暂停后可继续', async () => {
-  const t = task(); t.done = ['a']; const f = fixture({ tasks: [t, { ...task('t2'), subject: { ...task().subject, id: 's2' } }], activeTaskId: 't', status: 'running', currentCourseId: 'a', currentSectionTitle: '视频课节', message: '执行中' });
+  const t = task(); t.done = ['a']; t.courses.push(course('next')); const f = fixture({ tasks: [t, { ...task('t2'), subject: { ...task().subject, id: 's2' } }], activeTaskId: 't', status: 'running', currentCourseId: 'a', currentSectionTitle: '视频课节', message: '执行中' });
   const body = f.root.querySelector('.body'); assert.equal(body.hidden, true);
-  const header = f.root.querySelector('header'); assert.match(header.textContent, /学习中/u); assert.match(header.textContent, /专区完成 1\/2/u); assert.match(header.textContent, /本任务完成 1\/1 门/u);
+  const header = f.root.querySelector('header'); assert.match(header.textContent, /学习中/u); assert.match(header.textContent, /总完成 1\/3 门/u);
   const run = header.querySelector('[data-action="run-toggle"]'); assert.ok(run); assert.equal(run.disabled, false); assert.equal(run.textContent, '暂停'); await f.click('run-toggle');
-  await f.click('toggle'); assert.match(body.textContent, /当前课节：视频课节/u); assert.match(body.textContent, /当前课程：课程a/u);
+  await f.click('toggle'); assert.match(f.root.querySelector('.task-current').textContent, /课节 · 视频课节/u); assert.match(f.root.querySelector('.task-current').textContent, /课程a/u);
   await f.click('toggle'); f.emit({ status: 'paused' }); assert.equal(body.hidden, true); assert.equal(run.textContent, '继续'); await f.click('run-toggle'); assert.equal(f.calls.filter(call => call[0] === 'pause').length, 1); assert.deepEqual(f.calls.at(-1), ['start']); f.close();
 });
 
@@ -163,7 +183,7 @@ test('问题对应专区和课程并允许重试、跳过；跳过和空选择�
 test('旧required任务统计过滤选修并说明兼容范围，无专题旧任务提示重新读取', async () => {
   const t = task('t', [course('a'), course('b', 'not-started', true, false)]); t.scope = 'required'; t.done = ['a', 'b'];
   const f = fixture({ tasks: [t, { ...task('old', []), subject: null }], activeTaskId: 't' }); f.panel.open(); await f.click('detail-t');
-  assert.match(f.root.querySelector('[data-task-summary="t"]').textContent, /所选 1.*完成 1/su); const detail = f.root.querySelector('[data-task-detail="t"]'); assert.match(detail.textContent, /旧任务仅执行必修课程和课节/u); assert.equal(detail.querySelector('[data-course="b"]').disabled, true); assert.match(f.root.querySelector('[data-task-summary="old"]').textContent, /尚未读取专区/u); f.close();
+  assert.match(f.root.querySelector('[data-task-summary="t"]').textContent, /已完成 1 门/u); assert.equal(f.root.querySelector('[data-task-progress="t"]').max,1); const detail = f.root.querySelector('[data-task-detail="t"]'); assert.match(detail.textContent, /旧任务仅执行必修课程和课节/u); assert.equal(detail.querySelector('[data-course="b"]').disabled, true); assert.match(f.root.querySelector('[data-task-summary="old"]').textContent, /尚未读取专区/u); f.close();
 });
 
 test('添加未确认时问题重试和跳过不能启动已有队列；取消添加后恢复', async () => {

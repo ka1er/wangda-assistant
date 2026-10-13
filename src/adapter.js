@@ -202,6 +202,7 @@ export function readPage(document, hash) {
 }
 
 export function createAdapter(win) {
+  const mutedPlayers = new WeakMap();
   const read = () => ({ ...readPage(win.document, win.location.hash), online: win.navigator.onLine !== false });
   const navigate = (route, kind) => {
     if (typeof route !== 'string' || wdAdapterRoute(route).kind !== kind) return false;
@@ -256,6 +257,16 @@ export function createAdapter(win) {
       return true;
     },
     pauseMedia,
+    muteCurrentMedia(course, runId) {
+      const page = read(); const active = page.sections.find(section => section.id === page.activeSectionId);
+      if (!runId || page.kind !== 'course' || page.courseId !== course?.id || page.route !== course.route || !active || active.courseId !== course.id || ![5, 6].includes(active.type) || page.issues.some(issue => !issue.includes('未识别本页媒体播放器'))) return false;
+      const key = `${runId}:${page.route}:${active.id}`; let applied = false;
+      for (const media of win.document.querySelectorAll('video,audio')) {
+        if (mutedPlayers.get(media) === key) { applied = true; continue; }
+        try { media.muted = true; mutedPlayers.set(media, key); applied = true; } catch { /* Unavailable players do not prevent the course from loading. */ }
+      }
+      return applied;
+    },
     leaveLearning(subjectRoute) {
       if (read().kind !== 'course') return false;
       pauseMedia();
@@ -266,7 +277,7 @@ export function createAdapter(win) {
       if (read().kind !== 'course') return false;
       const media = [...win.document.querySelectorAll('video,audio')].find(item => item.paused && !item.ended);
       if (!media) return false;
-      try { await media.play(); return true; } catch { return false; }
+      try { media.muted = true; await media.play(); return true; } catch { return false; }
     },
     diagnose() {
       const page = read();
