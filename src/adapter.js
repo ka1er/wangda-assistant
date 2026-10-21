@@ -202,7 +202,6 @@ export function readPage(document, hash) {
 }
 
 export function createAdapter(win) {
-  const mutedPlayers = new WeakMap();
   const read = () => ({ ...readPage(win.document, win.location.hash), online: win.navigator.onLine !== false });
   const navigate = (route, kind) => {
     if (typeof route !== 'string' || wdAdapterRoute(route).kind !== kind) return false;
@@ -257,13 +256,23 @@ export function createAdapter(win) {
       return true;
     },
     pauseMedia,
+    watchCurrentMedia(check) {
+      let active = true;
+      const changed = event => { if (active && event.target?.matches?.('video,audio')) check(); };
+      const events = ['loadstart', 'loadedmetadata', 'play', 'playing', 'volumechange'];
+      for (const type of events) win.document.addEventListener(type, changed, true);
+      const observer = typeof win.MutationObserver === 'function' ? new win.MutationObserver(records => {
+        if (active && records.some(record => [...record.addedNodes].some(node => node.matches?.('video,audio') || node.querySelector?.('video,audio')))) check();
+      }) : null;
+      observer?.observe(win.document.documentElement, { childList: true, subtree: true });
+      return () => { active = false; observer?.disconnect(); for (const type of events) win.document.removeEventListener(type, changed, true); };
+    },
     muteCurrentMedia(course, runId) {
       const page = read(); const active = page.sections.find(section => section.id === page.activeSectionId);
-      if (!runId || page.kind !== 'course' || page.courseId !== course?.id || page.route !== course.route || !active || active.courseId !== course.id || ![5, 6].includes(active.type) || page.issues.some(issue => !issue.includes('未识别本页媒体播放器'))) return false;
-      const key = `${runId}:${page.route}:${active.id}`; let applied = false;
+      if (!runId || page.kind !== 'course' || page.courseId !== course?.id || page.route !== course.route || page.relearn?.manualRequired || !active || active.courseId !== course.id || ![5, 6].includes(active.type) || page.issues.some(issue => !issue.includes('未识别本页媒体播放器'))) return false;
+      let applied = false;
       for (const media of win.document.querySelectorAll('video,audio')) {
-        if (mutedPlayers.get(media) === key) { applied = true; continue; }
-        try { media.muted = true; mutedPlayers.set(media, key); applied = true; } catch { /* Unavailable players do not prevent the course from loading. */ }
+        try { if (!media.muted) media.muted = true; applied = true; } catch { /* Unavailable players do not prevent the course from loading. */ }
       }
       return applied;
     },

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         网大助手
 // @namespace    wangda-assistant
-// @version      0.1.0-beta.13
+// @version      0.1.0-beta.14
 // @updateURL    https://raw.githubusercontent.com/ka1er/wangda-assistant/refs/heads/beta-channel/dist/wangda-assistant.user.js
 // @downloadURL  https://raw.githubusercontent.com/ka1er/wangda-assistant/refs/heads/beta-channel/dist/wangda-assistant.user.js
 // @description  手动勾选课程、管理多专区任务队列，按平台完成状态连续学习
@@ -343,7 +343,6 @@ function readPage(document, hash) {
 }
 
 function createAdapter(win) {
-  const mutedPlayers = new WeakMap();
   const read = () => ({ ...readPage(win.document, win.location.hash), online: win.navigator.onLine !== false });
   const navigate = (route, kind) => {
     if (typeof route !== 'string' || wdAdapterRoute(route).kind !== kind) return false;
@@ -398,13 +397,23 @@ function createAdapter(win) {
       return true;
     },
     pauseMedia,
+    watchCurrentMedia(check) {
+      let active = true;
+      const changed = event => { if (active && event.target?.matches?.('video,audio')) check(); };
+      const events = ['loadstart', 'loadedmetadata', 'play', 'playing', 'volumechange'];
+      for (const type of events) win.document.addEventListener(type, changed, true);
+      const observer = typeof win.MutationObserver === 'function' ? new win.MutationObserver(records => {
+        if (active && records.some(record => [...record.addedNodes].some(node => node.matches?.('video,audio') || node.querySelector?.('video,audio')))) check();
+      }) : null;
+      observer?.observe(win.document.documentElement, { childList: true, subtree: true });
+      return () => { active = false; observer?.disconnect(); for (const type of events) win.document.removeEventListener(type, changed, true); };
+    },
     muteCurrentMedia(course, runId) {
       const page = read(); const active = page.sections.find(section => section.id === page.activeSectionId);
-      if (!runId || page.kind !== 'course' || page.courseId !== course?.id || page.route !== course.route || !active || active.courseId !== course.id || ![5, 6].includes(active.type) || page.issues.some(issue => !issue.includes('未识别本页媒体播放器'))) return false;
-      const key = `${runId}:${page.route}:${active.id}`; let applied = false;
+      if (!runId || page.kind !== 'course' || page.courseId !== course?.id || page.route !== course.route || page.relearn?.manualRequired || !active || active.courseId !== course.id || ![5, 6].includes(active.type) || page.issues.some(issue => !issue.includes('未识别本页媒体播放器'))) return false;
+      let applied = false;
       for (const media of win.document.querySelectorAll('video,audio')) {
-        if (mutedPlayers.get(media) === key) { applied = true; continue; }
-        try { media.muted = true; mutedPlayers.set(media, key); applied = true; } catch { /* Unavailable players do not prevent the course from loading. */ }
+        try { if (!media.muted) media.muted = true; applied = true; } catch { /* Unavailable players do not prevent the course from loading. */ }
       }
       return applied;
     },
@@ -435,6 +444,12 @@ function createAdapter(win) {
 const wdQueueStatuses = new Set(['completed', 'learning', 'not-started', 'unknown']);
 const wdQueueId = /^[A-Za-z0-9_-]+$/u;
 const wdQueueStrings = value => Array.isArray(value) && value.every(id => typeof id === 'string') && new Set(value).size === value.length;
+
+function isTaskComplete(task) {
+  if (!task?.subject) return false;
+  const selected = task.courses.filter(course => course.selected && (task.scope === 'all' || course.required));
+  return Boolean(selected.length && selected.every(course => task.done.includes(course.id) && !task.recheck?.includes(course.id)) && !task.skipped.length && !task.deferred?.length && !task.recheck?.length);
+}
 
 function validWindow(window) {
   const parse = (value, end) => {
@@ -529,6 +544,7 @@ function createController(options) {
   let needOpen = false;
   let ticking = false;
   let mediaPending = null;
+  let stopMediaWatch = null;
   let resumeNoticeKey = null;
   let recovery = null;
   let restorePending = false;
@@ -583,6 +599,7 @@ function createController(options) {
       } catch { blocked = true; text += ' 停止状态保存失败，请关闭自动恢复后再使用。'; }
     }
     generation += 1;
+    stopMediaWatch?.(); stopMediaWatch = null;
     if (timer !== null) unschedule(timer);
     timer = null;
     preparing = pending = grace = loading = recovery = null;
@@ -725,6 +742,21 @@ function createController(options) {
     if (problem?.taskId === taskId) problem = null;
     return persist();
   });
+  const clearCompletedTasks = async () => {
+    if (destroyed || blocked || restorePending || status === 'preparing') return false;
+    const running = ['running', 'waiting'].includes(status);
+    const clear = () => {
+      const removed = new Set(record?.tasks.filter(item => isTaskComplete(item) && !(running && item.id === record.activeTaskId)).map(item => item.id));
+      if (!removed.size) return false;
+      record.tasks = record.tasks.filter(item => !removed.has(item.id));
+      if (removed.has(record.activeTaskId)) { record.activeTaskId = record.tasks[0]?.id || null; currentSectionTitle = ''; currentPlayback = null; }
+      if (removed.has(problem?.taskId)) problem = null;
+      if (!persist()) return false;
+      message = `已清除 ${removed.size} 个已完成专区。`; emit(); return true;
+    };
+    if (running) { try { return held && verify() ? clear() : false; } catch (error) { return storageError(error); } }
+    return edit(clear);
+  };
   const moveTask = async (taskId, index) => {
     if (destroyed || blocked || restorePending || status === 'preparing') return false;
     const move = () => {
@@ -790,6 +822,19 @@ function createController(options) {
     if (status !== 'running' || !held || !runId || record?.automation?.mute === false) return;
     try { adapter.muteCurrentMedia?.(course, runId); } catch { /* Muting an unavailable player must not interrupt learning. */ }
   };
+  const watchMedia = () => {
+    stopMediaWatch?.(); stopMediaWatch = null;
+    if (record?.automation?.mute === false) return;
+    try {
+      stopMediaWatch = adapter.watchCurrentMedia?.(() => {
+        if (destroyed || status !== 'running' || !held || recovery) return;
+        if (!isWithinWindow(now(), record.window)) { waitWindow(); return; }
+        if (!verify()) return;
+        const current = queue().find(course => course.id === task.current);
+        if (current) muteCourse(current);
+      }) || null;
+    } catch { /* Polling still applies muting if media events cannot be watched. */ }
+  };
   const start = async (preferred = null) => {
     if (!editable() || !record || !record.tasks.length) return tell('请先添加专题任务。');
     if (!isWithinWindow(now(), record.window) && !record.automation.enabled) return tell('当前不在允许的北京时间学习时段内。');
@@ -805,7 +850,7 @@ function createController(options) {
     generation += 1; restorePending = false; status = isWithinWindow(now(), record.window) ? 'running' : 'waiting'; needOpen = true; played.clear(); seenPlaying.clear(); resumeAttempts.clear(); retries.clear(); pending = grace = loading = recovery = null;
     message = status === 'waiting' ? `等待学习时段 ${record.window.start}—${record.window.end}（北京时间），到时自动继续。` : '正在按平台课节状态连续学习。';
     if (status === 'waiting') waitWindow();
-    else muteCourse(entry.course);
+    else { watchMedia(); muteCourse(entry.course); }
     watch(); emit(); return true;
   };
   const pause = async () => {
@@ -873,6 +918,7 @@ function createController(options) {
   };
   const waitWindow = () => {
     currentPlayback = null;
+    stopMediaWatch?.(); stopMediaWatch = null;
     if (!record.automation.enabled) { stop('已到学习时段边界，已停止媒体并退出学习页。', true); return; }
     if (ownsCurrentLearningPage()) {
       try { adapter.pauseMedia(); if (adapter.leaveLearning(task.subject.route) === false) throw Error(); }
@@ -937,7 +983,7 @@ function createController(options) {
         stop(page.kind === 'login' ? '登录已失效，请重新登录后继续。' : page.errorCode === '1' ? '其他学习窗口已接管播放，请关闭其他窗口后手动继续。' : '平台学习限制提示，请在当前页面处理后继续。'); notify(message); return;
       }
       if (status === 'waiting') {
-        if (isWithinWindow(now(), record.window)) { status = 'running'; needOpen = true; message = '已进入学习时段，正在继续队列。'; emit(); }
+        if (isWithinWindow(now(), record.window)) { status = 'running'; needOpen = true; watchMedia(); message = '已进入学习时段，正在继续队列。'; emit(); }
         return;
       }
       if (status === 'running' && record.automation.enabled && page.online === false) {
@@ -1084,7 +1130,7 @@ function createController(options) {
             const request = { key, since: milliseconds(), resume: resuming };
             mediaPending = request;
             const token = generation;
-            // A resume must preserve a same-section manual unmute.
+            // muteCourse and media events enforce the option; resume leaves volume unchanged.
             Promise.resolve(adapter.playCurrentMedia(resuming ? false : record.automation.mute)).then(success => {
               try {
                 if (destroyed || generation !== token || status !== 'running' || mediaPending !== request || !verify()) return;
@@ -1120,7 +1166,7 @@ function createController(options) {
   if (!blocked && record?.automation.enabled && record.automation.resumeOnReload && record.runRequested) { restorePending = true; message = '正在准备恢复上次开始的队列。'; watch(); }
   return {
     getState, subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
-    search, chooseCandidate, collectDraft, draftSetSelection, selectCourses, addDraft, discardDraft, setSelection, setTaskMode, recheckCompleted, refreshTask, removeTask, moveTask, setWindow, setAutomation,
+    search, chooseCandidate, collectDraft, draftSetSelection, selectCourses, addDraft, discardDraft, setSelection, setTaskMode, recheckCompleted, refreshTask, removeTask, clearCompletedTasks, moveTask, setWindow, setAutomation,
     start, pause, retry, skipCurrent, tick,
     diagnose() {
       const diagnostic = adapter.diagnose();
@@ -1134,6 +1180,8 @@ function createController(options) {
     destroy({ preserveRun = false } = {}) { if (destroyed) return; const keep = preserveRun && record?.automation.enabled && record.automation.resumeOnReload && ['running', 'waiting'].includes(status); stop('面板已关闭，任务已暂停。', true, false, keep); destroyed = true; listeners.clear(); },
   };
 }
+
+
 
 function createPanel(win, controller, version) {
   const document = win.document;
@@ -1185,6 +1233,8 @@ function createPanel(win, controller, version) {
   const queueHeading = element('div', '', queueView); queueHeading.className = 'headline'; element('h2', '任务队列', queueHeading);
   button('add', '添加专区', queueHeading, () => { adding = true; render(controller.getState()); target.focus(); });
   element('p', '拖动 ↕ 调整优先级', queueView).className = 'muted';
+  const clearCompleted = button('clear-completed', '清除已完成', queueView, () => controller.clearCompletedTasks(), false);
+  clearCompleted.title = '清理已完成专区，保留执行中、未完成和待处理任务。';
   const empty = element('p', '还没有任务，点击“添加专区”开始。', queueView); empty.className = 'muted';
   const taskList = element('div', '', queueView);
   const queueControls = element('div', '', queueView); queueControls.className = 'buttons';
@@ -1225,7 +1275,7 @@ function createPanel(win, controller, version) {
   const automatic = automaticInput('automatic', '自动重试、暂存异常课程并续学');
   const resumeOnReload = automaticInput('resumeOnReload', '刷新或重新打开后恢复已开始的队列');
   const mute = automaticInput('mute', '自动静音课程');
-  mute.title = '暂停任务后可修改；关闭后保留播放器原声音设置。';
+  mute.title = '开启时持续保持静音；需要声音时请暂停任务后关闭此选项。';
   element('p', '自动重试开启后，按学习时段续学；主动暂停会取消自动执行。需保持网大页面打开。', autoBox).className = 'muted';
   const utility = element('div', '', body); utility.className = 'buttons';
   button('stop-learning', '停止学习并退出', utility, () => controller.pause(), false);
@@ -1236,7 +1286,7 @@ function createPanel(win, controller, version) {
   const eligible = task => task.courses.filter(course => course.selected && (task.scope === 'all' || course.required));
   const isDone = (task, id) => Boolean(task?.done.includes(id) && !task.recheck?.includes(id));
   const counts = task => { const selected = eligible(task); return { selected: selected.length, done: selected.filter(course => isDone(task, course.id)).length, skipped: selected.filter(course => task.skipped.includes(course.id)).length, deferred: task.deferred?.length || 0 }; };
-  const completeTask = task => { if (!task) return false; const c = counts(task); return Boolean(task.subject && c.selected && c.done === c.selected && !task.skipped.length && !c.deferred && !task.recheck?.length); };
+  const completeTask = isTaskComplete;
   const currentTask = (task, state = latest) => {
     if (!task?.subject || task.id !== state.activeTaskId || completeTask(task) || ['complete', 'preparing'].includes(state.status)) return false;
     const selected = eligible(task);
@@ -1462,6 +1512,9 @@ function createPanel(win, controller, version) {
     const cannotStart = starting || state.unavailable || adding || Boolean(state.draft) || !hasPending;
     const hasStarted = Boolean(state.currentCourseId) || state.tasks.some(item => item.current || item.done.length || item.skipped.length || item.deferred?.length);
     startButton.disabled = running || cannotStart;
+    const completedCount = state.tasks.filter(item => completeTask(item) && !(running && item.id === state.activeTaskId)).length;
+    clearCompleted.textContent = `清除已完成${completedCount ? `（${completedCount}）` : ''}`;
+    clearCompleted.disabled = !completedCount || state.unavailable || state.status === 'preparing' || state.phase === 'resuming';
     runButton.textContent = running ? '暂停' : state.status === 'complete' ? '已完成' : hasStarted ? '继续' : '开始';
     runButton.disabled = starting || (!running && cannotStart); toggle.disabled = false;
     for (const control of busy) control.disabled = true;
@@ -1476,7 +1529,7 @@ function createPanel(win, controller, version) {
 
 
 
-const wdMainVersion = "0.1.0-beta.13";
+const wdMainVersion = "0.1.0-beta.14";
 
 function wdMainBootstrap(win) {
   if (win.location.protocol !== 'https:' || win.location.hostname !== 'wangda.chinamobile.com' || win.top !== win.self) return;

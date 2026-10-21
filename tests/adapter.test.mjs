@@ -282,12 +282,20 @@ test('播放只对暂停且未结束媒体尝试一次，失败返回false', asy
   assert.equal(await adapter.playCurrentMedia(), false);
 });
 
-test('目标音视频按运行与课节静音一次，手动开声保持，新媒体和新课节重新静音', () => {
+test('目标音视频持续静音，初始化重置声音后重新应用且保持原音量', () => {
   const {window}=dom(chapters(section('one',{active:true,type:5}))+'<video></video><audio></audio>');const a=createAdapter(window);const target={id:'course-1',route:courseRoute};const video=window.document.querySelector('video');video.volume=.6;
   assert.equal(typeof a.muteCurrentMedia,'function');assert.equal(a.muteCurrentMedia(target,'run-1'),true);assert.equal(video.muted,true);assert.equal(window.document.querySelector('audio').muted,true);assert.equal(video.volume,.6);
-  video.muted=false;a.muteCurrentMedia(target,'run-1');assert.equal(video.muted,false);
-  const next=window.document.createElement('video');window.document.body.append(next);a.muteCurrentMedia(target,'run-1');assert.equal(next.muted,true);assert.equal(video.muted,false);
+  video.muted=false;a.muteCurrentMedia(target,'run-1');assert.equal(video.muted,true);assert.equal(video.volume,.6);
+  const next=window.document.createElement('video');window.document.body.append(next);a.muteCurrentMedia(target,'run-1');assert.equal(next.muted,true);assert.equal(video.muted,true);
   window.document.querySelector('dl').id='D597show-sectionstwo';a.muteCurrentMedia(target,'run-1');assert.equal(video.muted,true);video.muted=false;a.muteCurrentMedia(target,'run-2');assert.equal(video.muted,true);window.close();
+});
+
+test('媒体加载和播放事件捕获非冒泡事件，新媒体插入触发检查，卸载后不再触发', async () => {
+  const {window}=dom(chapters(section('one',{active:true,type:5}))+'<video></video>');const a=createAdapter(window);const video=window.document.querySelector('video');let checks=0;
+  assert.equal(typeof a.watchCurrentMedia,'function');const unwatch=a.watchCurrentMedia(()=>{checks++;a.muteCurrentMedia({id:'course-1',route:courseRoute},'run');});
+  for(const type of ['loadstart','loadedmetadata','play','playing','volumechange']){video.muted=false;video.dispatchEvent(new window.Event(type));assert.equal(video.muted,true,type);}
+  const next=window.document.createElement('video');window.document.body.append(next);await Promise.resolve();assert.equal(next.muted,true);
+  const before=checks;window.document.body.append(window.document.createElement('p'));await Promise.resolve();assert.equal(checks,before);unwatch();unwatch();video.muted=false;video.dispatchEvent(new window.Event('play'));assert.equal(video.muted,false);const last=window.document.createElement('video');window.document.body.append(last);await Promise.resolve();assert.equal(last.muted,false);assert.equal(checks,before);window.close();
 });
 
 test('静音不操作无关课程、同课不同专区、图文或未知课节以及 iframe', () => {

@@ -1,5 +1,5 @@
 import { normalizeTitle, isWithinWindow, decideLearningAction } from './core.js';
-import { normalizeQueue, mergeCourses, validWindow } from './queue.js';
+import { normalizeQueue, mergeCourses, validWindow, isTaskComplete } from './queue.js';
 
 const wdControllerTaskKey = 'wangda-assistant.task';
 const wdControllerLeaseKey = 'wangda-assistant.lease';
@@ -42,6 +42,7 @@ export function createController(options) {
   let needOpen = false;
   let ticking = false;
   let mediaPending = null;
+  let stopMediaWatch = null;
   let resumeNoticeKey = null;
   let recovery = null;
   let restorePending = false;
@@ -96,6 +97,7 @@ export function createController(options) {
       } catch { blocked = true; text += ' 停止状态保存失败，请关闭自动恢复后再使用。'; }
     }
     generation += 1;
+    stopMediaWatch?.(); stopMediaWatch = null;
     if (timer !== null) unschedule(timer);
     timer = null;
     preparing = pending = grace = loading = recovery = null;
@@ -238,6 +240,21 @@ export function createController(options) {
     if (problem?.taskId === taskId) problem = null;
     return persist();
   });
+  const clearCompletedTasks = async () => {
+    if (destroyed || blocked || restorePending || status === 'preparing') return false;
+    const running = ['running', 'waiting'].includes(status);
+    const clear = () => {
+      const removed = new Set(record?.tasks.filter(item => isTaskComplete(item) && !(running && item.id === record.activeTaskId)).map(item => item.id));
+      if (!removed.size) return false;
+      record.tasks = record.tasks.filter(item => !removed.has(item.id));
+      if (removed.has(record.activeTaskId)) { record.activeTaskId = record.tasks[0]?.id || null; currentSectionTitle = ''; currentPlayback = null; }
+      if (removed.has(problem?.taskId)) problem = null;
+      if (!persist()) return false;
+      message = `已清除 ${removed.size} 个已完成专区。`; emit(); return true;
+    };
+    if (running) { try { return held && verify() ? clear() : false; } catch (error) { return storageError(error); } }
+    return edit(clear);
+  };
   const moveTask = async (taskId, index) => {
     if (destroyed || blocked || restorePending || status === 'preparing') return false;
     const move = () => {
@@ -303,6 +320,19 @@ export function createController(options) {
     if (status !== 'running' || !held || !runId || record?.automation?.mute === false) return;
     try { adapter.muteCurrentMedia?.(course, runId); } catch { /* Muting an unavailable player must not interrupt learning. */ }
   };
+  const watchMedia = () => {
+    stopMediaWatch?.(); stopMediaWatch = null;
+    if (record?.automation?.mute === false) return;
+    try {
+      stopMediaWatch = adapter.watchCurrentMedia?.(() => {
+        if (destroyed || status !== 'running' || !held || recovery) return;
+        if (!isWithinWindow(now(), record.window)) { waitWindow(); return; }
+        if (!verify()) return;
+        const current = queue().find(course => course.id === task.current);
+        if (current) muteCourse(current);
+      }) || null;
+    } catch { /* Polling still applies muting if media events cannot be watched. */ }
+  };
   const start = async (preferred = null) => {
     if (!editable() || !record || !record.tasks.length) return tell('请先添加专题任务。');
     if (!isWithinWindow(now(), record.window) && !record.automation.enabled) return tell('当前不在允许的北京时间学习时段内。');
@@ -318,7 +348,7 @@ export function createController(options) {
     generation += 1; restorePending = false; status = isWithinWindow(now(), record.window) ? 'running' : 'waiting'; needOpen = true; played.clear(); seenPlaying.clear(); resumeAttempts.clear(); retries.clear(); pending = grace = loading = recovery = null;
     message = status === 'waiting' ? `等待学习时段 ${record.window.start}—${record.window.end}（北京时间），到时自动继续。` : '正在按平台课节状态连续学习。';
     if (status === 'waiting') waitWindow();
-    else muteCourse(entry.course);
+    else { watchMedia(); muteCourse(entry.course); }
     watch(); emit(); return true;
   };
   const pause = async () => {
@@ -386,6 +416,7 @@ export function createController(options) {
   };
   const waitWindow = () => {
     currentPlayback = null;
+    stopMediaWatch?.(); stopMediaWatch = null;
     if (!record.automation.enabled) { stop('已到学习时段边界，已停止媒体并退出学习页。', true); return; }
     if (ownsCurrentLearningPage()) {
       try { adapter.pauseMedia(); if (adapter.leaveLearning(task.subject.route) === false) throw Error(); }
@@ -450,7 +481,7 @@ export function createController(options) {
         stop(page.kind === 'login' ? '登录已失效，请重新登录后继续。' : page.errorCode === '1' ? '其他学习窗口已接管播放，请关闭其他窗口后手动继续。' : '平台学习限制提示，请在当前页面处理后继续。'); notify(message); return;
       }
       if (status === 'waiting') {
-        if (isWithinWindow(now(), record.window)) { status = 'running'; needOpen = true; message = '已进入学习时段，正在继续队列。'; emit(); }
+        if (isWithinWindow(now(), record.window)) { status = 'running'; needOpen = true; watchMedia(); message = '已进入学习时段，正在继续队列。'; emit(); }
         return;
       }
       if (status === 'running' && record.automation.enabled && page.online === false) {
@@ -597,7 +628,7 @@ export function createController(options) {
             const request = { key, since: milliseconds(), resume: resuming };
             mediaPending = request;
             const token = generation;
-            // A resume must preserve a same-section manual unmute.
+            // muteCourse and media events enforce the option; resume leaves volume unchanged.
             Promise.resolve(adapter.playCurrentMedia(resuming ? false : record.automation.mute)).then(success => {
               try {
                 if (destroyed || generation !== token || status !== 'running' || mediaPending !== request || !verify()) return;
@@ -633,7 +664,7 @@ export function createController(options) {
   if (!blocked && record?.automation.enabled && record.automation.resumeOnReload && record.runRequested) { restorePending = true; message = '正在准备恢复上次开始的队列。'; watch(); }
   return {
     getState, subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
-    search, chooseCandidate, collectDraft, draftSetSelection, selectCourses, addDraft, discardDraft, setSelection, setTaskMode, recheckCompleted, refreshTask, removeTask, moveTask, setWindow, setAutomation,
+    search, chooseCandidate, collectDraft, draftSetSelection, selectCourses, addDraft, discardDraft, setSelection, setTaskMode, recheckCompleted, refreshTask, removeTask, clearCompletedTasks, moveTask, setWindow, setAutomation,
     start, pause, retry, skipCurrent, tick,
     diagnose() {
       const diagnostic = adapter.diagnose();

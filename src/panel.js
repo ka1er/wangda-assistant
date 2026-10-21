@@ -1,3 +1,5 @@
+import { isTaskComplete } from './queue.js';
+
 export function createPanel(win, controller, version) {
   const document = win.document;
   const existing = document.getElementById('wangda-assistant');
@@ -48,6 +50,8 @@ export function createPanel(win, controller, version) {
   const queueHeading = element('div', '', queueView); queueHeading.className = 'headline'; element('h2', '任务队列', queueHeading);
   button('add', '添加专区', queueHeading, () => { adding = true; render(controller.getState()); target.focus(); });
   element('p', '拖动 ↕ 调整优先级', queueView).className = 'muted';
+  const clearCompleted = button('clear-completed', '清除已完成', queueView, () => controller.clearCompletedTasks(), false);
+  clearCompleted.title = '清理已完成专区，保留执行中、未完成和待处理任务。';
   const empty = element('p', '还没有任务，点击“添加专区”开始。', queueView); empty.className = 'muted';
   const taskList = element('div', '', queueView);
   const queueControls = element('div', '', queueView); queueControls.className = 'buttons';
@@ -88,7 +92,7 @@ export function createPanel(win, controller, version) {
   const automatic = automaticInput('automatic', '自动重试、暂存异常课程并续学');
   const resumeOnReload = automaticInput('resumeOnReload', '刷新或重新打开后恢复已开始的队列');
   const mute = automaticInput('mute', '自动静音课程');
-  mute.title = '暂停任务后可修改；关闭后保留播放器原声音设置。';
+  mute.title = '开启时持续保持静音；需要声音时请暂停任务后关闭此选项。';
   element('p', '自动重试开启后，按学习时段续学；主动暂停会取消自动执行。需保持网大页面打开。', autoBox).className = 'muted';
   const utility = element('div', '', body); utility.className = 'buttons';
   button('stop-learning', '停止学习并退出', utility, () => controller.pause(), false);
@@ -99,7 +103,7 @@ export function createPanel(win, controller, version) {
   const eligible = task => task.courses.filter(course => course.selected && (task.scope === 'all' || course.required));
   const isDone = (task, id) => Boolean(task?.done.includes(id) && !task.recheck?.includes(id));
   const counts = task => { const selected = eligible(task); return { selected: selected.length, done: selected.filter(course => isDone(task, course.id)).length, skipped: selected.filter(course => task.skipped.includes(course.id)).length, deferred: task.deferred?.length || 0 }; };
-  const completeTask = task => { if (!task) return false; const c = counts(task); return Boolean(task.subject && c.selected && c.done === c.selected && !task.skipped.length && !c.deferred && !task.recheck?.length); };
+  const completeTask = isTaskComplete;
   const currentTask = (task, state = latest) => {
     if (!task?.subject || task.id !== state.activeTaskId || completeTask(task) || ['complete', 'preparing'].includes(state.status)) return false;
     const selected = eligible(task);
@@ -325,6 +329,9 @@ export function createPanel(win, controller, version) {
     const cannotStart = starting || state.unavailable || adding || Boolean(state.draft) || !hasPending;
     const hasStarted = Boolean(state.currentCourseId) || state.tasks.some(item => item.current || item.done.length || item.skipped.length || item.deferred?.length);
     startButton.disabled = running || cannotStart;
+    const completedCount = state.tasks.filter(item => completeTask(item) && !(running && item.id === state.activeTaskId)).length;
+    clearCompleted.textContent = `清除已完成${completedCount ? `（${completedCount}）` : ''}`;
+    clearCompleted.disabled = !completedCount || state.unavailable || state.status === 'preparing' || state.phase === 'resuming';
     runButton.textContent = running ? '暂停' : state.status === 'complete' ? '已完成' : hasStarted ? '继续' : '开始';
     runButton.disabled = starting || (!running && cannotStart); toggle.disabled = false;
     for (const control of busy) control.disabled = true;

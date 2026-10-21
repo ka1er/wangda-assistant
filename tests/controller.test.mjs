@@ -26,6 +26,39 @@ export function course(sections, extra = {}) { return { kind: 'course', subjectI
 export function section(id = 'v', type = 5, status = 'learning', active = true) { return { id, courseId: 'c', type, status, active, required: true }; }
 export async function elapse(f, duration) { for (let remaining = duration; remaining > 0; remaining -= 1000) { f.advance(Math.min(remaining, 1000)); await f.c.tick(); } }
 
+async function cleanupFixture() {
+  const base=await ready(fixture());const stored=structuredClone(base.shared['wangda-assistant.task']);base.c.destroy();const original=stored.tasks[0];
+  stored.tasks=['done','pending','skip','defer','recheck','empty','card-only'].map(id=>({...structuredClone(original),id,subject:{id,title:id,route:`#/study/subject/detail/${id}`},courses:[{...original.courses[0],route:`#/study/course/detail/subject-course/c/6/${id}`,status:id==='card-only'?'completed':'learning',selected:id!=='empty'}],done:['done','recheck'].includes(id)?['c']:[],skipped:id==='skip'?['c']:[],deferred:id==='defer'?[{courseId:'c',reason:'人工处理'}]:[],recheck:id==='recheck'?['c']:[],current:id==='done'?'c':null}));
+  stored.activeTaskId='done';return fixture({'wangda-assistant.task':stored});
+}
+
+test('一键清理仅删除已确认全部完成任务，保留未完成及异常，并保存恢复', async () => {
+  const f=await cleanupFixture();assert.equal(typeof f.c.clearCompletedTasks,'function');assert.equal(await f.c.clearCompletedTasks(),true);const state=f.c.getState();assert.deepEqual(state.tasks.map(t=>t.id),['pending','skip','defer','recheck','empty','card-only']);assert.equal(state.activeTaskId,'pending');assert.equal(state.currentCourseId,null);assert.deepEqual(f.actions,[]);
+  const g=fixture(f.shared);assert.deepEqual(g.c.getState().tasks,state.tasks);g.c.destroy();const revision=f.shared['wangda-assistant.task'].revision;assert.equal(await f.c.clearCompletedTasks(),false);assert.equal(f.shared['wangda-assistant.task'].revision,revision);f.c.destroy();
+});
+
+test('运行中清理完成任务不中断当前课，当前完成切换宽限期也保留', async () => {
+  const f=await cleanupFixture();await f.c.start({taskId:'pending',courseId:'c'});f.page(course([section()],{subjectId:'pending',route:'#/study/course/detail/subject-course/c/6/pending',media:{paused:false,ended:false}}));await f.c.tick();const actions=[...f.actions];assert.equal(await f.c.clearCompletedTasks(),true);assert.equal(f.c.getState().status,'running');assert.equal(f.c.getState().activeTaskId,'pending');assert.deepEqual(f.actions,actions);
+  f.page(course([section('v',5,'completed')],{subjectId:'pending',route:'#/study/course/detail/subject-course/c/6/pending',media:{paused:true,ended:true}}));await f.c.tick();assert.equal(f.c.getState().status,'running');assert.equal(await f.c.clearCompletedTasks(),false);assert.ok(f.c.getState().tasks.some(t=>t.id==='pending'));f.c.destroy();
+});
+
+test('清理全部完成任务保留全局设置，过期revision和其他标签执行不得清理', async () => {
+  const f=await cleanupFixture();const stored=f.shared['wangda-assistant.task'];stored.tasks=stored.tasks.filter(t=>t.id==='done');stored.automation={enabled:true,resumeOnReload:false,mute:false};const g=fixture(f.shared);assert.equal(await g.c.clearCompletedTasks(),true);assert.deepEqual(g.c.getState().tasks,[]);assert.equal(g.c.getState().activeTaskId,null);assert.deepEqual(g.c.getState().automation,stored.automation);g.c.destroy();f.c.destroy();
+  const h=await cleanupFixture();const stale=fixture(h.shared);await h.c.setWindow({start:'10:00',end:'23:00'});const before=structuredClone(h.shared['wangda-assistant.task']);assert.equal(await stale.c.clearCompletedTasks(),false);assert.deepEqual(h.shared['wangda-assistant.task'],before);stale.c.destroy();
+  await h.c.start({taskId:'pending',courseId:'c'});const foreign=fixture(h.shared);const running=structuredClone(h.shared['wangda-assistant.task']);assert.equal(await foreign.c.clearCompletedTasks(),false);assert.deepEqual(h.shared['wangda-assistant.task'],running);foreign.c.destroy();h.c.destroy();
+});
+
+test('媒体事件静音受执行权和时段控制，暂停后解绑，关闭静音不监听', async () => {
+  for(const reason of ['pause','window','lease','off']){const f=await ready(fixture());let callback=null,cleaned=0,muted=0;f.adapter.watchCurrentMedia=fn=>{callback=fn;return()=>{cleaned++;};};f.adapter.muteCurrentMedia=()=>{muted++;};if(reason==='off')await f.c.setAutomation({enabled:false,resumeOnReload:false,mute:false});f.page(course([section()],{media:{paused:false,ended:false}}));await f.c.start();
+    if(reason==='off'){assert.equal(callback,null);assert.equal(muted,0);f.c.destroy();continue;}assert.equal(typeof callback,'function');callback();assert.ok(muted>=2);const before=muted;
+    if(reason==='pause')await f.c.pause();if(reason==='window')f.advance(14*3600000);if(reason==='lease')f.shared['wangda-assistant.lease'].owner='other';callback();assert.equal(muted,before);assert.equal(f.c.getState().status,'paused');assert.equal(cleaned,1);f.c.destroy();
+  }
+});
+
+test('自动等待时段解除静音监听，进入下次时段后重新安装', async () => {
+  const f=await ready(fixture());await f.c.setAutomation({enabled:true,resumeOnReload:false,mute:true});await f.c.setWindow({start:'09:00',end:'10:01'});let callback,watched=0,cleaned=0;f.adapter.watchCurrentMedia=fn=>{callback=fn;watched++;return()=>{cleaned++;};};f.page(course([section()],{media:{paused:false,ended:false}}));await f.c.start();assert.equal(watched,1);f.advance(60000);callback();assert.equal(f.c.getState().status,'waiting');assert.equal(cleaned,1);f.advance(23*3600000);await f.c.tick();assert.equal(f.c.getState().status,'running');assert.equal(watched,2);f.c.destroy();assert.equal(cleaned,2);
+});
+
 test('静音偏好独立保存，关闭时开始与播放不静音，切换自动重试设置不重置偏好', async () => {
   const f=await ready(fixture());const muted=[],plays=[];f.adapter.muteCurrentMedia=(...args)=>muted.push(args);f.adapter.playCurrentMedia=async mute=>{plays.push(mute);return true;};
   await f.c.setAutomation({enabled:false,resumeOnReload:false,mute:false});assert.equal(f.c.getState().automation.mute,false);f.page(course([section()],{media:{paused:true,ended:false}}));await f.c.start();await f.c.tick();assert.equal(muted.length,0);assert.deepEqual(plays,[false]);await f.c.pause();
@@ -218,8 +251,9 @@ test('过时tab与owner丢失不能覆写新任务', async () => {
   const newTask = structuredClone(h.shared['wangda-assistant.task']); const newLease = structuredClone(h.shared['wangda-assistant.lease']); await h.c.tick();
   assert.equal(h.c.getState().status, 'paused'); assert.deepEqual(h.shared['wangda-assistant.task'], newTask); assert.deepEqual(h.shared['wangda-assistant.lease'], newLease); assert.ok(h.actions.includes('leave'));
 });
-test('普通播放中断先等待再原地恢复，不通知、不离页且保留手动声音状态', async () => {
+test('普通播放中断先等待再原地恢复，不通知、不离页且保留关闭静音后的声音状态', async () => {
   const notices=[],plays=[];const f=await ready(fixture({}, {notify:text=>notices.push(text)}));f.adapter.playCurrentMedia=async mute=>{plays.push(mute);f.page({media:{ended:false,paused:false}});return true;};
+  await f.c.setAutomation({enabled:false,resumeOnReload:false,mute:false});
   f.page(course([section()],{media:{ended:false,paused:false}}));await f.c.start();await f.c.tick();f.page({media:{ended:false,paused:true}});await f.c.tick();assert.equal(f.c.getState().status,'running');assert.equal(plays.length,0);await elapse(f,2000);
   assert.deepEqual(plays,[false]);assert.equal(f.c.getState().status,'running');assert.equal(f.actions.includes('leave'),false);assert.equal(notices.length,0);assert.deepEqual(f.c.getState().tasks[0].done,[]);f.c.destroy();
 });

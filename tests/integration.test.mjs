@@ -40,17 +40,30 @@ function setup() {
 
 test('目标课程已自动播放时开始即静音，平台更换播放器后继续静音', async () => {
   const f=setup();f.subject('s',[['a','未开始',true]]);await f.collect();f.w.location.hash='#/study/course/detail/subject-course/a/6/s';f.course('a',true);const first=f.w.document.querySelector('video');first.volume=.4;
-  await f.c.start();assert.equal(first.muted,true);assert.equal(first.volume,.4);first.muted=false;await f.c.tick();assert.equal(first.muted,false);
+  await f.c.start();assert.equal(first.muted,true);assert.equal(first.volume,.4);first.muted=false;await f.c.tick();assert.equal(first.muted,true);
   f.course('a',true);const next=f.w.document.querySelector('video');await f.c.tick();assert.equal(next.muted,true);assert.equal(f.c.getState().tasks[0].done.length,0);f.close();
 });
 
-test('原生媒体普通暂停自动原地恢复，保留开声和音量，助手暂停后不恢复', async () => {
+test('原生媒体普通暂停自动原地恢复，保持静音和音量，助手暂停后不恢复', async () => {
   const f=setup();f.subject('s',[['a','未开始',true]]);await f.collect();f.w.location.hash='#/study/course/detail/subject-course/a/6/s';f.course('a',true);
   const previous=f.w.document.querySelector('video'),media=f.w.document.createElement('video');previous.replaceWith(media);let paused=false,plays=0;
   Object.defineProperty(media,'paused',{get:()=>paused});media.play=async()=>{plays++;paused=false;};media.pause=()=>{paused=true;};media.volume=.4;
   await f.c.start();await f.c.tick();assert.equal(media.muted,true);media.muted=false;paused=true;await f.c.tick();await f.elapse(1000);assert.equal(plays,0);await f.elapse(1000);await f.c.tick();
-  assert.equal(plays,1);assert.equal(paused,false);assert.equal(media.muted,false);assert.equal(media.volume,.4);assert.match(f.w.location.hash,/subject-course\/a\/6\/s$/u);assert.equal(f.c.getState().status,'running');assert.deepEqual(f.c.getState().tasks[0].done,[]);
+  assert.equal(plays,1);assert.equal(paused,false);assert.equal(media.muted,true);assert.equal(media.volume,.4);assert.match(f.w.location.hash,/subject-course\/a\/6\/s$/u);assert.equal(f.c.getState().status,'running');assert.deepEqual(f.c.getState().tasks[0].done,[]);
   await f.click('run-toggle');await f.elapse(4000);assert.equal(f.c.getState().status,'paused');assert.equal(plays,1);assert.equal(paused,true);f.close();
+});
+
+test('视频延迟创建及初始化开声在轮询前静音，暂停与关闭选项后媒体事件不静音', async () => {
+  const f=setup();f.subject('s',[['a','未开始',true]]);await f.collect();await f.c.start();await f.c.tick();f.course('a',true);await Promise.resolve();const media=f.w.document.querySelector('video');assert.equal(media.muted,true);
+  for(const type of ['loadedmetadata','play','playing','volumechange']){media.muted=false;media.dispatchEvent(new f.w.Event(type));assert.equal(media.muted,true,type);}await f.c.pause();media.muted=false;media.dispatchEvent(new f.w.Event('play'));await Promise.resolve();assert.equal(media.muted,false);
+  await f.c.setAutomation({enabled:false,resumeOnReload:false,mute:false});await f.c.start();await f.c.tick();f.course('a',true);await Promise.resolve();const next=f.w.document.querySelector('video');next.dispatchEvent(new f.w.Event('playing'));await f.c.tick();assert.equal(next.muted,false);f.close();
+});
+
+test('实际面板学习中清理上一完成专区，当前视频不断播，全部完成后可清空列表', async () => {
+  const f=setup();f.subject('s',[['a','未开始',true]]);await f.collect();f.subject('s2',[['b','未开始',true]]);await f.collect();f.panel.open();await f.c.start();await f.c.tick();f.course('a');f.complete('doc');await f.c.tick();
+  assert.equal(f.root.querySelector('[data-action="clear-completed"]').disabled,true);await f.elapse(6000);f.course('b',true);await f.c.tick();const media=f.w.document.querySelector('video');let pauses=0;media.pause=()=>{pauses++;};const active=f.c.getState().activeTaskId,route=f.w.location.hash;
+  assert.equal(f.root.querySelector('[data-action="clear-completed"]').disabled,false);await f.click('clear-completed');assert.equal(f.c.getState().tasks.length,1);assert.equal(f.c.getState().activeTaskId,active);assert.equal(f.c.getState().status,'running');assert.equal(f.w.location.hash,route);assert.equal(pauses,0);assert.equal(media.muted,true);assert.equal(f.root.querySelectorAll('article').length,1);
+  f.complete('v');await f.c.tick();await f.elapse(6000);f.complete('doc');await f.c.tick();assert.equal(f.c.getState().status,'complete');await f.click('clear-completed');assert.deepEqual(f.c.getState().tasks,[]);assert.equal(f.c.getState().currentCourseId,null);assert.equal(f.root.querySelectorAll('article').length,0);assert.equal(f.root.querySelector('[data-action="clear-completed"]').disabled,true);f.close();
 });
 
 test('原生视频时间传到当前课程，结束后等待图文，平台全部完成才将专区变灰', async () => {

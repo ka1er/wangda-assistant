@@ -2,6 +2,12 @@ const wdQueueStatuses = new Set(['completed', 'learning', 'not-started', 'unknow
 const wdQueueId = /^[A-Za-z0-9_-]+$/u;
 const wdQueueStrings = value => Array.isArray(value) && value.every(id => typeof id === 'string') && new Set(value).size === value.length;
 
+export function isTaskComplete(task) {
+  if (!task?.subject) return false;
+  const selected = task.courses.filter(course => course.selected && (task.scope === 'all' || course.required));
+  return Boolean(selected.length && selected.every(course => task.done.includes(course.id) && !task.recheck?.includes(course.id)) && !task.skipped.length && !task.deferred?.length && !task.recheck?.length);
+}
+
 export function validWindow(window) {
   const parse = (value, end) => {
     const match = /^(\d{1,2}):(\d{2})$/u.exec(value || '');

@@ -11,7 +11,7 @@ function fixture(overrides = {}) {
   const calls = []; let listener;
   const emit = patch => { Object.assign(state, patch); listener(state); };
   const controller = { getState: () => structuredClone(state), subscribe: fn => { listener = fn; return () => {}; } };
-  for (const name of ['search', 'chooseCandidate', 'collectDraft', 'setSelection', 'setTaskMode', 'recheckCompleted', 'refreshTask', 'removeTask', 'setWindow', 'start', 'pause', 'retry', 'skipCurrent', 'draftSetSelection', 'discardDraft', 'selectCourses', 'setAutomation']) controller[name] = async (...args) => { calls.push([name, ...args]); if (name === 'setWindow') emit({ window: args[0] }); if (name === 'setAutomation') emit({automation:args[0]}); return true; };
+  for (const name of ['search', 'chooseCandidate', 'collectDraft', 'setSelection', 'setTaskMode', 'recheckCompleted', 'refreshTask', 'removeTask', 'clearCompletedTasks', 'setWindow', 'start', 'pause', 'retry', 'skipCurrent', 'draftSetSelection', 'discardDraft', 'selectCourses', 'setAutomation']) controller[name] = async (...args) => { calls.push([name, ...args]); if (name === 'setWindow') emit({ window: args[0] }); if (name === 'setAutomation') emit({automation:args[0]}); return true; };
   controller.addDraft = async () => { calls.push(['addDraft']); emit({ tasks: [...state.tasks, task()], draft: null, candidates: [] }); return true; };
   controller.moveTask = async (id, index) => { calls.push(['moveTask',id,index]); const tasks=[...state.tasks]; tasks.splice(index,0,...tasks.splice(tasks.findIndex(t=>t.id===id),1)); emit({tasks}); return true; };
   controller.diagnose = () => { calls.push(['diagnose']); return { kind: 'home', courses: 0 }; };
@@ -21,6 +21,12 @@ function fixture(overrides = {}) {
   return { dom, state, calls, emit, root, click, close, panel };
 }
 const visibleText = node => [node, ...node.querySelectorAll('*')].filter(n => n.tagName !== 'STYLE' && !n.closest?.('[hidden]')).flatMap(n => [...n.childNodes].filter(child => child.nodeType === 3).map(child => child.textContent)).join(' ');
+
+test('清除已完成按钮展示可清数量，运行时保留当前任务，无完成项及不可编辑时禁用', async () => {
+  const done=task('done',[course('d')]);done.done=['d'];const current=task('current',[course('c')]);current.done=['c'];const f=fixture({tasks:[done,current,task('pending')],status:'running',activeTaskId:'current',currentCourseId:'c'});f.panel.open();
+  const clear=f.root.querySelector('[data-action="clear-completed"]');assert.ok(clear);assert.match(clear.textContent,/清除已完成.*1/u);assert.equal(clear.disabled,false);await f.click('clear-completed');assert.deepEqual(f.calls.at(-1),['clearCompletedTasks']);assert.equal(f.calls.some(call=>call[0]==='pause'),false);
+  f.emit({status:'paused'});assert.match(clear.textContent,/2/u);for(const patch of [{status:'preparing'},{status:'paused',phase:'resuming'},{status:'paused',phase:'paused',unavailable:true},{unavailable:false,tasks:[task('pending')]}]){f.emit(patch);assert.equal(clear.disabled,true);}f.close();
+});
 
 test('自动模式内静音开关默认开启且独立于自动重试，选择保存后保持', async () => {
   const f=fixture({tasks:[task()],automation:{enabled:false,resumeOnReload:false}});f.panel.open();const mute=f.root.querySelector('[name="mute"]');assert.ok(mute);assert.equal(mute.checked,true);assert.equal(mute.disabled,false);assert.match(mute.closest('label').textContent,/自动静音课程/u);
