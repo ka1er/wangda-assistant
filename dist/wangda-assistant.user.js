@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         网大助手
 // @namespace    wangda-assistant
-// @version      0.1.0-beta.14
+// @version      0.1.0-beta.15
 // @updateURL    https://raw.githubusercontent.com/ka1er/wangda-assistant/refs/heads/beta-channel/dist/wangda-assistant.user.js
 // @downloadURL  https://raw.githubusercontent.com/ka1er/wangda-assistant/refs/heads/beta-channel/dist/wangda-assistant.user.js
 // @description  手动勾选课程、管理多专区任务队列，按平台完成状态连续学习
@@ -148,6 +148,33 @@ const wdAdapterErrorPattern = new RegExp(`^#/study/errors/(${wdAdapterIdPattern}
 const wdAdapterSubjectRelearnPattern = new RegExp(`^#/study/subject-middle/(${wdAdapterIdPattern})/(1|9)$`, 'u');
 const wdAdapterCourseRelearnPattern = new RegExp(`^#/study/course-middle/(${wdAdapterIdPattern})/(1|2)$`, 'u');
 
+const wdAdapterLegacyLayout = {
+  card: '.content.new',
+  controls: '.content.new .img.course-item [id*="studyBtns-"], .content.new .img.course-item [id*="studyBtn-"]',
+  title: '.title',
+  status: '.study-status',
+  range: '.cont-class-type',
+};
+const wdAdapterCatalogLayouts = [
+  {
+    groupClass: 'catalog-state-info2',
+    card: '.item.course-item',
+    controls: ':scope > .item.course-item > .img > .img-cont > a[id*="studyBtn-"]',
+    title: ':scope > .title2 > .title-clamp-2',
+  },
+  {
+    groupClass: 'catalog-state-info',
+    card: '.item.course-item',
+    controls: ':scope > .item.course-item > .operation > a[id*="studyBtn-"]',
+    title: ':scope > .title > .text-overflow:first-child',
+    titleText: '.title-wrapper > .text-overflow',
+    status: ':scope > .class-type > span',
+  },
+];
+const wdAdapterCatalogGroupSelector = '.subject-detail-page .subject-detail-main > section.section[data-dynamic-key="content"] '
+  + '.subject-catalog > ul > li > [id*="sectionDiv-"] > '
+  + `:is(${wdAdapterCatalogLayouts.map(layout => `.${layout.groupClass}`).join(', ')})`;
+
 function wdAdapterText(element) {
   return (element?.textContent || '').trim();
 }
@@ -184,8 +211,26 @@ function wdAdapterRoute(hash) {
   return { kind, route, subjectId: null, courseId: null };
 }
 
-function wdAdapterCourseElements(document) {
-  return [...document.querySelectorAll('.content.new .img.course-item [id*="studyBtns-"], .content.new .img.course-item [id*="studyBtn-"]')];
+function wdAdapterSubjectCards(root, layout) {
+  return [...root.querySelectorAll(layout.controls)].map(element => ({ element, card: element.closest(layout.card), layout }));
+}
+
+function wdAdapterSubjectCatalog(document) {
+  const groups = [...document.querySelectorAll(wdAdapterCatalogGroupSelector)].filter(wdAdapterVisible);
+  if (!groups.length) return { cards: wdAdapterSubjectCards(document, wdAdapterLegacyLayout), introTitle: '' };
+  const main = groups[0].closest('.subject-detail-main');
+  const intro = main.querySelector(':scope > section.section[data-dynamic-key="introduce"] > [data-region] > .title-row > .h3');
+  const cards = groups.filter(group => group.closest('.subject-detail-main') === main).flatMap(group => {
+    const layout = wdAdapterCatalogLayouts.find(item => group.classList.contains(item.groupClass));
+    return wdAdapterSubjectCards(group, layout).filter(({ card }) => wdAdapterVisible(card));
+  });
+  return { cards, introTitle: intro && wdAdapterVisible(intro) ? wdAdapterTitle(intro) : '' };
+}
+
+function wdAdapterCourseTitle(card, layout) {
+  const title = card.querySelector(layout.title);
+  if (!layout.titleText) return wdAdapterTitle(title);
+  return title?.getAttribute('title')?.trim() || wdAdapterText(title?.querySelector(layout.titleText));
 }
 
 function wdAdapterSectionElements(document) {
@@ -254,26 +299,33 @@ function readPage(document, hash) {
   if (page.kind === 'subject') {
     page.title = wdAdapterTitle(document.querySelector('.subject-banner .title-row .h3, .banner-info .title-row .h3'));
     page.subjectTitleSource = page.title ? 'banner' : 'none';
+    const { cards, introTitle } = wdAdapterSubjectCatalog(document);
+    if (!page.title && introTitle) {
+      page.title = introTitle;
+      page.subjectTitleSource = 'intro';
+    }
     const seen = new Set();
     const ignored = new Map();
-    for (const element of wdAdapterCourseElements(document)) {
+    for (const { element, card, layout } of cards) {
       const id = wdAdapterAttribute(element, 'resource-id');
-      if (!id || seen.has(id)) continue;
-      seen.add(id);
+      if (!id) continue;
       const type = wdAdapterAttribute(element, 'section-type');
       if (type !== '10') {
-        ignored.set(type || 'unknown', (ignored.get(type || 'unknown') || 0) + 1);
+        const key = type || 'unknown';
+        if (!ignored.has(key)) ignored.set(key, new Set());
+        ignored.get(key).add(id);
         continue;
       }
+      if (seen.has(id)) continue;
+      seen.add(id);
       if (!new RegExp(`^${wdAdapterIdPattern}$`, 'u').test(id)) {
         page.issues.push('课程标识格式无法识别');
         continue;
       }
-      const card = element.closest('.content.new');
       page.courses.push({
-        id, title: wdAdapterTitle(card.querySelector('.title')),
-        status: wdAdapterStatus(card.querySelectorAll('.study-status')),
-        required: wdAdapterText(card.querySelector('.cont-class-type')) !== '选修',
+        id, title: wdAdapterCourseTitle(card, layout),
+        status: layout.status ? wdAdapterStatus(card.querySelectorAll(layout.status)) : 'unknown',
+        required: !layout.range || wdAdapterText(card.querySelector(layout.range)) !== '选修',
         route: `#/study/course/detail/subject-course/${id}/6/${page.subjectId}`,
       });
     }
@@ -283,7 +335,7 @@ function readPage(document, hash) {
       page.title = (document.title || '').trim();
       if (page.title) page.subjectTitleSource = 'document';
     }
-    for (const [type, count] of ignored) page.issues.push(`已忽略非课程资源：类型 ${/^\d+$/u.test(type) ? type : 'unknown'}，数量 ${count}`);
+    for (const [type, ids] of ignored) page.issues.push(`已忽略非课程资源：类型 ${/^\d+$/u.test(type) ? type : 'unknown'}，数量 ${ids.size}`);
   }
   if (page.kind === 'course') {
     page.title = wdAdapterTitle(document.querySelector('.course-side-title-row .text-overflow'));
@@ -1529,7 +1581,7 @@ function createPanel(win, controller, version) {
 
 
 
-const wdMainVersion = "0.1.0-beta.14";
+const wdMainVersion = "0.1.0-beta.15";
 
 function wdMainBootstrap(win) {
   if (win.location.protocol !== 'https:' || win.location.hostname !== 'wangda.chinamobile.com' || win.top !== win.self) return;

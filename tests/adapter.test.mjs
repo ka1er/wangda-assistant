@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 test('互斥学习错误页按路由识别，不混同一般未知页', async () => {
   const { readPage }=await import('../src/adapter.js');
@@ -25,6 +26,64 @@ const section = (id, options = {}) => `<dl class="required ${options.active ? 'f
 const chapters = (html) => `<div class="course-side-title-row"><span class="text-overflow">课程标题</span></div><div class="chapter-list chapter-all"><ul><li><div class="list-title" id="Drizzle42list-item-1">章节</div><div class="hidden">${html}</div></li></ul></div>`;
 const card = (id, options = {}) => `<li><div class="content new"><div class="img course-item"><div class="img-cont" id="D99studyBtn-${id}" data-resource-id="${id}" data-section-type="${options.type || 10}"></div><a class="btn" id="DrizzlestudyBtns-${id}" data-resource-id="${id}" data-section-type="${options.type || 10}"></a><div class="study-status not-start">${options.status || '未开始'}</div></div><span class="title" title="${options.title || '课程名称'}">截断</span><span class="cont-class-type">${options.optional ? '选修' : '必修'}</span></div></li>`;
 const result = (id, type) => `<div id="D42openDetail-${id}"><div class="search-page-title" title="候选${type}">截断</div><div class="special-box"><div class="section-left"><span>${type}</span></div></div></div>`;
+const catalog = layout => readFileSync(new URL(`./fixtures/subjects/catalog-${layout}.html`, import.meta.url), 'utf8');
+
+for (const [layout, label, count, status] of [['grid', '图卡', 13, 'unknown'], ['list', '列表', 6, 'completed']]) {
+  test(`专题目录${label}按页面顺序读取带专题上下文的课程`, () => {
+    const w = dom(catalog(layout), subjectRoute).window;
+    try {
+      w.document.title = '上一专题的标签标题';
+      const page = readPage(w.document, subjectRoute);
+      assert.equal(page.kind, 'subject');
+      assert.equal(page.subjectId, sid);
+      assert.equal(page.title, `示例${label}专题`);
+      assert.equal(page.subjectTitleSource, 'intro');
+      assert.deepEqual(page.courses, Array.from({ length: count }, (_, i) => {
+        const number = String(i + 1).padStart(2, '0');
+        const id = `${layout}-${number}`;
+        return { id, title: `示例${label}课程 ${number}`, status, required: true, route: `#/study/course/detail/subject-course/${id}/6/${sid}` };
+      }));
+      assert.deepEqual(page.issues, []);
+    } finally { w.close(); }
+  });
+}
+
+test('专题目录只采集当前课程列表内可见的课程，忽略杂项和无效控件', () => {
+  const w = dom(catalog('grid'), subjectRoute).window;
+  try {
+    const group = w.document.querySelector('.catalog-state-info2');
+    const row = group.firstElementChild;
+    const otherResource = row.cloneNode(true);
+    otherResource.querySelector('a').setAttribute('data-section-type', '5');
+    group.prepend(otherResource);
+    const hidden = row.cloneNode(true);
+    hidden.hidden = true;
+    hidden.querySelector('a').setAttribute('data-resource-id', 'hidden-course');
+    group.append(hidden, row.cloneNode(true));
+    w.document.body.append(group.cloneNode(true));
+    w.document.body.insertAdjacentHTML('beforeend', card('recommendation'));
+    const page = readPage(w.document, subjectRoute);
+    assert.equal(page.courses.length, 13);
+    assert.equal(page.courses[0].id, 'grid-01');
+    assert.equal(page.courses.at(-1).id, 'grid-13');
+    assert.match(page.issues.join(' '), /类型 5，数量 1/u);
+    assert.equal(readPage(w.document, '#/study/subject/detail/other/synthetic').kind, 'unknown');
+  } finally { w.close(); }
+});
+
+test('专题列表只从状态栏映射状态，标题属性缺失时只读标题文本', () => {
+  const w = dom(catalog('list'), subjectRoute).window;
+  try {
+    const rows = w.document.querySelectorAll('.catalog-state-info > .course-item');
+    rows[0].querySelector('.title > [title]').removeAttribute('title');
+    rows[0].querySelector('.class-type > span').textContent = '未开始';
+    rows[1].querySelector('.class-type > span').textContent = '学习中';
+    rows[2].querySelector('.class-type').remove();
+    const page = readPage(w.document, subjectRoute);
+    assert.equal(page.courses[0].title, '示例列表课程 01');
+    assert.deepEqual(page.courses.slice(0, 4).map(item => item.status), ['not-started', 'learning', 'unknown', 'completed']);
+  } finally { w.close(); }
+});
 
 test('专题重复控件按课程ID去重并保留专题路由上下文', () => {
   const page = readPage(dom(`<ul>${card('course-1')}${card('course-1')}${card('course-2', { optional: true, status: '已完成' })}</ul>`, subjectRoute).window.document, subjectRoute);

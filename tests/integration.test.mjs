@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { JSDOM } from 'jsdom';
 import { createAdapter } from '../src/adapter.js';
 import { createController } from '../src/controller.js';
@@ -14,8 +15,8 @@ function setup() {
     w.location.hash = `#/study/subject/detail/${id}`;
     page(`<div class="subject-banner"><div class="title-row"><h3 class="h3">正式专区${id}</h3></div></div>` + courses.map(([cid, status, required]) => `<div class="content new"><div class="img course-item"><button id="studyBtns-${cid}" data-resource-id="${cid}" data-section-type="10"></button></div><span class="title">课程${cid}</span><span class="study-status">${status}</span><span class="cont-class-type">${required ? '必修' : '选修'}</span></div>`).join(''));
   }
-  function search(id) {
-    page(`<button id="searchType-4">专题</button><input id="searchContent" name="keyword"><i id="searchBtn">搜索</i><ul id="all-list"><a href="#/study/subject/detail/${id}" title="正式专区${id}">结果</a><a href="#/study/subject/detail/other" title="其他专区">其他</a></ul>`);
+  function search(id, title = `正式专区${id}`) {
+    page(`<button id="searchType-4">专题</button><input id="searchContent" name="keyword"><i id="searchBtn">搜索</i><ul id="all-list"><a href="#/study/subject/detail/${id}" title="${title}">结果</a><a href="#/study/subject/detail/other" title="其他专区">其他</a></ul>`);
   }
   function course(id, video = false) {
     const node = page(`<div class="chapter-list chapter-all"><ul><li>${(video ? [['v', 5], ['doc', 1]] : [['doc', 1]]).map(([sid, type], i) => `<dl id="show-sections${sid}" data-course-id="${id}" data-section-type="${type}" class="${i ? '' : 'focus'}"><dt><span class="qcontent">${sid}</span></dt><dd><div class="item continue pointer"><span>学习中</span></div></dd></dl>`).join('')}</li></ul></div>`);
@@ -35,7 +36,58 @@ function setup() {
     assert.equal(root.querySelector('[data-candidates]').hidden, true); assert.equal(root.querySelector('[data-draft]').hidden, false);
   };
   const close = () => { panel.destroy(); c.destroy(); w.close(); };
-  subject(); return { w, c, a, subject, search, course, complete, elapse, collect, panel, root, click, change, add, close };
+  subject(); return { w, c, a, page, subject, search, course, complete, elapse, collect, panel, root, click, change, add, close };
+}
+
+for (const [layout, label, count, status] of [['grid', '图卡', 13, 'unknown'], ['list', '列表', 6, 'completed']]) {
+  test(`专题目录${label}可直接读取、搜索进入、入队刷新并保留课程路由`, async () => {
+    const html = readFileSync(new URL(`./fixtures/subjects/catalog-${layout}.html`, import.meta.url), 'utf8');
+    const body = new JSDOM(html);
+    const markup = body.window.document.body.innerHTML;
+    body.window.close();
+    const f = setup();
+    try {
+      const title = `示例${label}专题`;
+      const sid = `subject-${layout}`;
+      const route = `#/study/subject/detail/${sid}`;
+      const cid = `${layout}-01`;
+      f.w.location.hash = route;
+      f.page(markup);
+      f.panel.open();
+      await f.click('add');
+      await f.click('collect');
+      const direct = f.c.getState().draft;
+      assert.equal(direct.courses.length, count);
+      assert.equal(direct.courses[0].status, status);
+      assert.equal(direct.courses.some(item => item.selected), false);
+      await f.click('back');
+
+      await f.click('add');
+      f.root.querySelector('[name="target"]').value = title;
+      await f.click('search');
+      f.search(sid, title);
+      await f.c.tick();
+      await f.c.tick();
+      assert.equal(f.w.location.hash, route);
+      f.page(markup);
+      await f.c.tick();
+      assert.deepEqual(f.c.getState().draft, direct);
+      assert.equal(f.root.querySelector('[data-draft]').hidden, false);
+      assert.equal(f.c.draftSetSelection(cid, true), true);
+      await f.click('add-draft');
+      const [task] = f.c.getState().tasks;
+      assert.equal(task.courses[0].selected, true);
+      assert.equal(await f.c.refreshTask(task.id), true);
+      await f.c.tick();
+      assert.deepEqual(f.c.getState().tasks, [task]);
+
+      assert.equal(await f.c.start(), true);
+      await f.c.tick();
+      assert.equal(f.w.location.hash, `#/study/course/detail/subject-course/${cid}/6/${sid}`);
+      assert.equal(f.a.read().subjectId, sid);
+      assert.equal(f.a.read().courseId, cid);
+    } finally { f.close(); }
+  });
 }
 
 test('目标课程已自动播放时开始即静音，平台更换播放器后继续静音', async () => {
