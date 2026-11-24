@@ -262,6 +262,14 @@ function wdAdapterMediaHasBinding(media, attrName, expected) {
   return false;
 }
 
+const wdAdapterMediaStates = new WeakMap();
+let wdAdapterNextPlayerId = 0;
+
+function wdAdapterMediaState(media) {
+  if (!wdAdapterMediaStates.has(media)) wdAdapterMediaStates.set(media, { id: ++wdAdapterNextPlayerId, seekRevision: 0 });
+  return wdAdapterMediaStates.get(media);
+}
+
 function wdAdapterResolveMedia(document, page) {
   const all = [...document.querySelectorAll('video,audio')];
   const visible = all.filter(wdAdapterVisible);
@@ -581,6 +589,8 @@ export function readPage(document, hash) {
     if (resolvedMedia.status === 'resolved') {
       const media = resolvedMedia.target;
       const currentTime = media.currentTime, duration = media.duration;
+      const player = wdAdapterMediaState(media);
+      page.player = { id: player.id, seekRevision: player.seekRevision, seeking: media.seeking, readyState: media.readyState };
       // A source lets play() start loading even when the platform uses preload="none".
       page.mediaReady = !media.paused || media.ended || media.readyState >= media.HAVE_METADATA
         || Boolean(media.currentSrc || media.srcObject || media.getAttribute('src')?.trim()
@@ -761,6 +771,26 @@ export function createAdapter(win) {
   };
   return {
     read,
+    visibility: () => win.document.visibilityState === 'visible' ? 'visible' : 'hidden',
+    watchPlayback(listener) {
+      const doc = win.document;
+      const visibility = () => listener('visibility');
+      const route = event => listener('route', wdAdapterRoute(new URL(event.newURL || win.location.href).hash));
+      const media = event => {
+        if (!event.target?.matches?.('video,audio')) return;
+        const player = wdAdapterMediaState(event.target);
+        if (event.type === 'seeking') player.seekRevision += 1;
+        else listener('pause', player.id);
+      };
+      doc.addEventListener('visibilitychange', visibility);
+      win.addEventListener('hashchange', route);
+      for (const type of ['pause', 'seeking']) doc.addEventListener(type, media, true);
+      return () => {
+        doc.removeEventListener('visibilitychange', visibility);
+        win.removeEventListener('hashchange', route);
+        for (const type of ['pause', 'seeking']) doc.removeEventListener(type, media, true);
+      };
+    },
     goSearch() { return navigate('#/search', 'search'); },
     searchKeyword(text) {
       if (read().kind !== 'search' || typeof text !== 'string' || !text.trim()) return false;
@@ -826,14 +856,21 @@ export function createAdapter(win) {
       if (!navigate(subjectRoute, 'subject')) navigate('#/home', 'home');
       return true;
     },
-    async playCurrentMedia(mute = true) {
+    async playCurrentMedia(mute = true, expected = null) {
       const page = read();
       if (page.kind !== 'course') return false;
+      if (expected && (page.route !== expected.route || page.activeSectionId !== expected.sectionId
+        || page.player?.id !== expected.playerId || page.relearn?.manualRequired)) return false;
       const resolved = wdAdapterResolveMedia(win.document, page);
       if (resolved.status !== 'resolved') return false;
       const media = resolved.target;
       if (!media.paused || media.ended) return false;
-      try { if (mute) media.muted = true; await media.play(); return true; } catch { return false; }
+      try { if (mute) media.muted = true; await media.play(); return true; }
+      catch (error) {
+        const name = error?.name;
+        expected?.onNativeError?.(['NotAllowedError', 'NotSupportedError', 'AbortError', 'SecurityError'].includes(name) ? name : 'OtherError');
+        return false;
+      }
     },
     diagnose() {
       const page = read();

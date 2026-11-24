@@ -98,6 +98,37 @@ export function createPanel(win, controller, version) {
   button('stop-learning', '停止学习并退出', utility, () => controller.pause(), false);
   button('diagnose', '页面诊断', utility, () => { diagnostic.textContent = JSON.stringify(controller.diagnose(), null, 2); }, false);
   const diagnostic = element('pre', '', body);
+  const playbackDiagnostics = element('details', '', body); playbackDiagnostics.className = 'separator';
+  element('summary', '播放诊断日志', playbackDiagnostics);
+  const recordingLabel = element('label', '', playbackDiagnostics);
+  const recording = element('input', '', recordingLabel); recording.type = 'checkbox'; recording.name = 'playback-log';
+  element('span', ' 记录播放诊断', recordingLabel);
+  const logActions = element('div', '', playbackDiagnostics); logActions.className = 'buttons';
+  let logText = null;
+  button('copy-playback-log', '复制诊断日志', logActions, async () => {
+    const text = controller.getPlaybackLogText();
+    logText?.remove();
+    logText = null;
+    if (!text) { logFeedback.textContent = '暂无日志，请先开启记录并复现问题。'; return; }
+    try {
+      await win.navigator.clipboard.writeText(text);
+      logFeedback.textContent = '诊断日志已复制。';
+    } catch {
+      logText = element('textarea', '', playbackDiagnostics);
+      logText.style.cssText = 'width:100%;font:inherit;'; logText.rows = 6; logText.readOnly = true;
+      logText.setAttribute('aria-label', '播放诊断日志文本');
+      logText.value = text;
+      logText.focus();
+      logText.select();
+      logFeedback.textContent = '浏览器未允许直接复制，日志已选中，可按 Ctrl+C 或 ⌘C 复制。';
+    }
+  }, false);
+  const logFeedback = element('p', '默认关闭。日志保留在当前标签页，刷新前请先复制。', playbackDiagnostics);
+  logFeedback.className = 'muted'; logFeedback.setAttribute('role', 'status');
+  recording.addEventListener('change', () => {
+    controller.setPlaybackLogging(recording.checked);
+    logFeedback.textContent = recording.checked ? '正在记录。复现后可复制诊断日志。' : '已停止记录，仍可复制已有日志。';
+  });
   const taskNodes = new Map(); let candidateSignature = ''; let draftSubjectId = null;
   const setOpen = open => { body.hidden = !open; toggle.textContent = open ? '收起' : '展开'; toggle.setAttribute('aria-expanded', String(open)); render(controller.getState()); };
   const eligible = task => task.courses.filter(course => course.selected && (task.scope === 'all' || course.required));

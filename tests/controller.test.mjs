@@ -16,7 +16,8 @@ export function fixture(shared = {}, options = {}) {
     goSearch: () => { actions.push('search'); page.kind = 'search'; return true; }, searchKeyword: text => { actions.push(['keyword', text]); return true; },
     openSubject: item => { actions.push(['subject', item.id]); return true; }, openCourse: item => { actions.push(['course', item.id]); return true; },
     selectSection: id => { actions.push(['section', id]); return true; }, pauseMedia: () => actions.push('pause'), leaveLearning: () => actions.push('leave'),
-    playCurrentMedia: () => { actions.push('play'); return options.play ? options.play() : Promise.resolve(true); } };
+    playCurrentMedia: () => { actions.push('play'); return options.play ? options.play() : Promise.resolve(true); },
+    watchPlayback: options.watchPlayback };
   const c = createController({ adapter, storage, locks, notify: options.notify, now: () => new Date(time), owner: options.owner || Math.random().toString(), setInterval: () => 1, clearInterval: () => {} });
   return { c, shared, actions, adapter, page: value => { if (value) page = { ...page, ...value }; return page; }, advance: ms => { time += ms; }, config: () => c.setWindow({ start: '09:00', end: '24:00' }) };
 }
@@ -258,10 +259,37 @@ test('普通播放中断先等待再原地恢复，不通知、不离页且保�
   assert.deepEqual(plays,[false]);assert.equal(f.c.getState().status,'running');assert.equal(f.actions.includes('leave'),false);assert.equal(notices.length,0);assert.deepEqual(f.c.getState().tasks[0].done,[]);f.c.destroy();
 });
 
-test('普通暂停恢复失败有退避与三次预算，耗尽才停止并通知一次', async () => {
-  for(const reject of [false,true]){const notices=[];const f=await ready(fixture({}, {notify:text=>notices.push(text),play:()=>reject?Promise.reject(Error('blocked')):Promise.resolve(false)}));
-    f.page(course([section()],{media:{ended:false,paused:false}}));await f.c.start();await f.c.tick();f.page({media:{ended:false,paused:true}});await f.c.tick();await elapse(f,2000);assert.equal(f.actions.filter(x=>x==='play').length,1);assert.equal(notices.length,0);await elapse(f,4000);assert.equal(f.actions.filter(x=>x==='play').length,1);await elapse(f,24000);
-    assert.equal(f.actions.filter(x=>x==='play').length,3);assert.equal(f.c.getState().status,'paused');assert.match(f.c.getState().message,/自动恢复.*3/u);assert.equal(notices.length,1);const before=[...f.actions];await elapse(f,60000);assert.deepEqual(f.actions,before);f.c.destroy();
+test('普通暂停仅在前台确认无推进才计失败，退避且三次后原地提醒', async () => {
+  for (const reject of [false, true]) {
+    const notices = [];
+    const f = await ready(fixture({}, {
+      notify: text => notices.push(text),
+      play: () => reject ? Promise.reject(Error('blocked')) : Promise.resolve(false),
+    }));
+    f.page(course([section()], { media: { ended: false, paused: false, currentTime: 12 } }));
+    f.c.setPlaybackLogging(true);
+    await f.c.start();
+    await f.c.tick();
+    f.page({ media: { ended: false, paused: true, currentTime: 12 } });
+    await f.c.tick();
+    await elapse(f, 2000);
+    for (const [index, delay] of [5000, 10000, 0].entries()) {
+      await elapse(f, 7000);
+      assert.equal(f.actions.filter(action => action === 'play').length, index + 1);
+      assert.equal(f.c.getState().status, 'running');
+      assert.equal(notices.length, 0);
+      await elapse(f, 1000);
+      if (delay) await elapse(f, delay);
+    }
+    assert.equal(f.c.getState().status, 'paused');
+    assert.match(f.c.getState().message, /自动恢复.*3/u);
+    assert.equal(notices.length, 1);
+    assert.equal(f.actions.includes('leave'), false);
+    assert.match(f.c.getPlaybackLogText(), /"event":"manual-intervention"/u);
+    const before = [...f.actions];
+    await elapse(f, 60000);
+    assert.deepEqual(f.actions, before);
+    f.c.destroy();
   }
 });
 
@@ -272,27 +300,164 @@ test('恢复等待期间助手暂停、平台错误、离页和时间边界均�
   }
 });
 
-test('旧播放Promise晚到不清除新恢复请求，新请求超时后不接受晚到成功', async () => {
-  const settlements=[];const f=await ready(fixture({}, {play:()=>new Promise(resolve=>settlements.push(resolve))}));f.page(course([section()],{media:{ended:false,paused:true}}));await f.c.start();await f.c.tick();f.page({media:{ended:false,paused:false}});await f.c.tick();f.page({media:{ended:false,paused:true}});await f.c.tick();await elapse(f,2000);assert.equal(settlements.length,2);
-  settlements[0](false);for(let i=0;i<10;i++)await Promise.resolve();assert.equal(f.c.getState().status,'running');await elapse(f,29000);assert.equal(f.c.getState().status,'running');await elapse(f,1000);assert.equal(f.c.getState().status,'paused');assert.match(f.c.getState().message,/自动恢复.*超时/u);const before=[...f.actions];settlements[1](true);for(let i=0;i<10;i++)await Promise.resolve();assert.deepEqual(f.actions,before);f.c.destroy();
+test('旧播放请求被进度取代，新请求超时只计一次并忽略之后的回调', async () => {
+  const settlements = [];
+  const f = await ready(fixture({}, { play: () => new Promise(resolve => settlements.push(resolve)) }));
+  f.page(course([section()], { media: { ended: false, paused: true, currentTime: 0 } }));
+  f.c.setPlaybackLogging(true);
+  await f.c.start();
+  await f.c.tick();
+  f.page({ media: { ended: false, paused: false, currentTime: 1 } });
+  await f.c.tick();
+  f.page({ media: { ended: false, paused: true, currentTime: 1 } });
+  await f.c.tick();
+  await elapse(f, 2000);
+  assert.equal(settlements.length, 2);
+  settlements[0](false);
+  await elapse(f, 29000);
+  assert.doesNotMatch(f.c.getPlaybackLogText(), /"reason":"request-timeout"/u);
+  await elapse(f, 1000);
+  assert.match(f.c.getPlaybackLogText(), /"counter":"resume","previous":0,"reason":"request-timeout"/u);
+  assert.equal(f.c.getState().status, 'running');
+  settlements[1](true);
+  await elapse(f, 5000);
+  assert.equal(settlements.length, 3);
+  f.c.destroy();
 });
 
-test('间隔超过一分钟的普通暂停可重新获得恢复预算', async () => {
-  const f=await ready(fixture());let plays=0;f.adapter.playCurrentMedia=async()=>{plays++;f.page({media:{ended:false,paused:false}});return true;};f.page(course([section()],{media:{ended:false,paused:false}}));await f.c.start();await f.c.tick();
-  for(let i=0;i<4;i++){f.page({media:{ended:false,paused:true}});await f.c.tick();await elapse(f,2000);await f.c.tick();assert.equal(f.c.getState().status,'running');f.advance(61000);}assert.equal(plays,4);f.c.destroy();
+test('确认时间推进后连续数次普通暂停均可恢复，无需等满一分钟', async () => {
+  const f = await ready(fixture());
+  let time = 20, plays = 0;
+  f.adapter.playCurrentMedia = async () => {
+    plays++;
+    f.page({ media: { ended: false, paused: false, currentTime: ++time } });
+    return true;
+  };
+  f.page(course([section()], { media: { ended: false, paused: false, currentTime: time } }));
+  f.c.setPlaybackLogging(true);
+  await f.c.start();
+  await f.c.tick();
+  for (let i = 0; i < 4; i++) {
+    f.page({ media: { ended: false, paused: true, currentTime: time } });
+    await f.c.tick();
+    await elapse(f, 2000);
+    await f.c.tick();
+    assert.equal(f.c.getState().status, 'running');
+  }
+  assert.equal(plays, 4);
+  assert.equal(f.c.getPlaybackLogText().match(/"outcome":"progress"/gu)?.length, 4);
+  assert.doesNotMatch(f.c.getPlaybackLogText(), /"event":"failure-count"/u);
+  f.c.destroy();
 });
 
-test('持续暂停时缓慢失败跨过一分钟也不能重置三次恢复预算', async () => {
-  const settlements=[],notices=[];const f=await ready(fixture({}, {notify:text=>notices.push(text),play:()=>new Promise(resolve=>settlements.push(resolve))}));
-  f.page(course([section()],{media:{ended:false,paused:false}}));await f.c.start();await f.c.tick();f.page({media:{ended:false,paused:true}});await f.c.tick();await elapse(f,2000);
-  for(let i=0;i<3;i++){assert.equal(settlements.length,i+1);await elapse(f,29000);settlements[i](false);for(let j=0;j<10;j++)await Promise.resolve();await f.c.tick();}
-  assert.equal(settlements.length,3);assert.equal(f.c.getState().status,'paused');assert.equal(notices.length,1);assert.equal(f.actions.includes('leave'),false);f.c.destroy();
+test('播放时间推进清空之前的三次课程重试，随后一次有效恢复仍可继续', async () => {
+  let plays = 0;
+  const f = await ready(fixture({}, { play: async () => ++plays >= 4 }));
+  await f.c.setAutomation({ enabled: true, resumeOnReload: false });
+  f.page(course([section()], { media: { ended: false, paused: true, currentTime: 5 } }));
+  f.c.setPlaybackLogging(true);
+  await f.c.start();
+  await f.c.tick();
+  for (const delay of [5000, 10000, 20000]) await elapse(f, delay);
+  assert.equal(plays, 4);
+  f.page({ media: { ended: false, paused: false, currentTime: 5 } });
+  await elapse(f, 1000);
+  assert.doesNotMatch(f.c.getPlaybackLogText(), /"outcome":"progress"/u);
+  f.page({ media: { ended: false, paused: false, currentTime: 6 } });
+  await elapse(f, 1000);
+  assert.match(f.c.getPlaybackLogText(), /"courseRetries":0[^\n]*"counter":"course","previous":3,"reason":"current-time-advanced"/u);
+  f.page({ media: { ended: false, paused: true, currentTime: 6 } });
+  await f.c.tick();
+  await elapse(f, 2000);
+  assert.equal(plays, 5);
+  f.page({ media: { ended: false, paused: false, currentTime: 7 } });
+  await elapse(f, 1000);
+  assert.equal(f.c.getState().status, 'running');
+  assert.equal(f.actions.includes('leave'), false);
+  f.c.destroy();
 });
 
-test('恢复前自然续播或已结束不额外play，反复短暂停仍受预算限制', async () => {
-  for(const ended of [false,true]){const f=await ready(fixture());f.page(course([section()],{media:{ended:false,paused:false}}));await f.c.start();await f.c.tick();f.page({media:{ended:false,paused:true}});await f.c.tick();f.page({media:{ended,paused:ended}});await elapse(f,4000);assert.equal(f.actions.includes('play'),false);assert.equal(f.c.getState().status,'running');f.c.destroy();}
-  const f=await ready(fixture());let plays=0;f.adapter.playCurrentMedia=async()=>{plays++;f.page({media:{paused:false,ended:false}});return true;};f.page(course([section()],{media:{paused:false,ended:false}}));await f.c.start();await f.c.tick();
-  for(let i=0;i<4;i++){f.page({media:{paused:true,ended:false}});await f.c.tick();await elapse(f,10000);await f.c.tick();}assert.equal(plays,3);assert.equal(f.c.getState().status,'paused');f.c.destroy();
+test('恢复后的跳转播放位置和短暂解除暂停无法充当真实播放进度', async () => {
+  const f = await ready(fixture());
+  f.page(course([section()], {
+    player: { id: 1, seekRevision: 0, readyState: 4 },
+    media: { ended: false, paused: false, currentTime: 10 },
+  }));
+  f.c.setPlaybackLogging(true);
+  await f.c.start();
+  await f.c.tick();
+  f.page({ media: { ended: false, paused: true, currentTime: 10 } });
+  await f.c.tick();
+  await elapse(f, 2000);
+  f.page({ player: { id: 1, seekRevision: 1, readyState: 4 }, media: { ended: false, paused: false, currentTime: 90 } });
+  await elapse(f, 1000);
+  f.page({ media: { ended: false, paused: true, currentTime: 90 } });
+  await elapse(f, 7000);
+  const log = f.c.getPlaybackLogText();
+  assert.doesNotMatch(log, /"outcome":"progress"/u);
+  assert.match(log, /"resumeFailures":1[^\n]*"counter":"resume"/u);
+  f.c.destroy();
+});
+
+test('诊断默认关闭、最多保留最近 400 条，关闭后仍可读取已有日志', () => {
+  let listen;
+  const f = fixture({}, { watchPlayback: listener => { listen = listener; } });
+  const route = index => listen('route', { kind: 'course', route: `#/private-fixture/${index}` });
+  route(0);
+  assert.equal(f.c.getPlaybackLogText(), '');
+  f.c.setPlaybackLogging(true);
+  for (let i = 1; i <= 450; i++) { f.advance(1000); route(i); }
+  f.c.setPlaybackLogging(false);
+  const text = f.c.getPlaybackLogText();
+  route(451);
+  assert.equal(f.c.getPlaybackLogText(), text);
+  const [header, ...rows] = text.split('\n');
+  assert.match(header, /保留 400 条｜覆盖 53 条/u);
+  assert.equal(rows.length, 400);
+  assert.equal(JSON.parse(rows[0]).route, 53);
+  assert.equal(JSON.parse(rows.at(-1)).event, 'recording-stopped');
+  assert.doesNotMatch(text, /private-fixture/u);
+  f.c.destroy();
+});
+
+test('持续暂停的慢速失败跨过一分钟仍保留已确认的失败计数', async () => {
+  const settlements = [], notices = [];
+  const f = await ready(fixture({}, { notify: text => notices.push(text), play: () => new Promise(resolve => settlements.push(resolve)) }));
+  f.page(course([section()], { media: { ended: false, paused: false, currentTime: 10 } }));
+  await f.c.start();
+  await f.c.tick();
+  f.page({ media: { ended: false, paused: true, currentTime: 10 } });
+  await f.c.tick();
+  await elapse(f, 2000);
+  for (const [index, delay] of [5000, 10000, 0].entries()) {
+    assert.equal(settlements.length, index + 1);
+    await elapse(f, 29000);
+    settlements[index](false);
+    await Promise.resolve();
+    await f.c.tick();
+    if (delay) await elapse(f, delay);
+  }
+  assert.equal(settlements.length, 3);
+  assert.equal(f.c.getState().status, 'paused');
+  assert.equal(notices.length, 1);
+  assert.equal(f.actions.includes('leave'), false);
+  f.c.destroy();
+});
+
+test('恢复前自然续播或已结束不额外请求播放', async () => {
+  for (const ended of [false, true]) {
+    const f = await ready(fixture());
+    f.page(course([section()], { media: { ended: false, paused: false, currentTime: 10 } }));
+    await f.c.start();
+    await f.c.tick();
+    f.page({ media: { ended: false, paused: true, currentTime: 10 } });
+    await f.c.tick();
+    f.page({ media: { ended, paused: ended, currentTime: 11 } });
+    await elapse(f, 4000);
+    assert.equal(f.actions.includes('play'), false);
+    assert.equal(f.c.getState().status, 'running');
+    f.c.destroy();
+  }
 });
 
 test('恢复等待期间登录失效、重学提示或执行权丢失均不再play', async () => {
@@ -302,9 +467,30 @@ test('恢复等待期间登录失效、重学提示或执行权丢失均不再pl
   }
 });
 
-test('已被实际播放取代的旧请求回调不再读取快照或干扰新恢复请求', async () => {
-  for(const reject of [false,true]){const settlements=[];const f=await ready(fixture({}, {play:()=>new Promise((resolve,fail)=>settlements.push({resolve,fail}))}));f.page(course([section()],{media:{paused:true,ended:false}}));await f.c.start();await f.c.tick();f.page({media:{paused:false,ended:false}});await f.c.tick();f.page({media:{paused:true,ended:false}});await f.c.tick();await elapse(f,2000);assert.equal(settlements.length,2);
-    const read=f.adapter.read;f.adapter.read=()=>{throw Error('temporary snapshot failure');};if(reject)settlements[0].fail(Error('old request'));else settlements[0].resolve(false);for(let i=0;i<10;i++)await Promise.resolve();f.adapter.read=read;assert.equal(f.c.getState().status,'running');await elapse(f,30000);assert.match(f.c.getState().message,/自动恢复.*超时/u);f.c.destroy();
+test('被播放进度取代的旧回调不读取快照也不干扰新请求', async () => {
+  for (const reject of [false, true]) {
+    const settlements = [];
+    const f = await ready(fixture({}, { play: () => new Promise((resolve, fail) => settlements.push({ resolve, fail })) }));
+    f.page(course([section()], { media: { ended: false, paused: true, currentTime: 0 } }));
+    await f.c.start();
+    await f.c.tick();
+    f.page({ media: { ended: false, paused: false, currentTime: 1 } });
+    await f.c.tick();
+    f.page({ media: { ended: false, paused: true, currentTime: 1 } });
+    await f.c.tick();
+    await elapse(f, 2000);
+    assert.equal(settlements.length, 2);
+    const read = f.adapter.read;
+    f.adapter.read = () => { throw Error('temporary snapshot failure'); };
+    if (reject) settlements[0].fail(Error('old request'));
+    else settlements[0].resolve(false);
+    await Promise.resolve();
+    f.adapter.read = read;
+    f.page({ media: { ended: false, paused: false, currentTime: 2 } });
+    await elapse(f, 30000);
+    assert.equal(f.c.getState().status, 'running');
+    assert.equal(settlements.length, 2);
+    f.c.destroy();
   }
 });
 
@@ -324,10 +510,10 @@ test('持续暂停的播放请求30秒未settle必须退出，晚到成功或失
     const stopped = [...f.actions]; finish(result); for (let i = 0; i < 5; i += 1) await Promise.resolve(); await f.c.tick(); assert.deepEqual(f.actions, stopped); assert.equal(f.c.getState().status, 'paused');
   }
 });
-test('播放请求未settle但媒体已playing时长播放不误超时', async () => {
+test('播放请求未settle但媒体时间已推进时不会误超时', async () => {
   const f = await ready(fixture({}, { play: () => new Promise(() => {}) }));
-  f.page(course([section()], { media: { ended: false, paused: true } })); await f.c.start(); await f.c.tick();
-  f.page({ media: { ended: false, paused: false } }); await elapse(f, 600000); assert.equal(f.c.getState().status, 'running'); assert.ok(!f.actions.includes('leave')); assert.equal(f.actions.filter(x => x === 'play').length, 1);
+  f.page(course([section()], { media: { ended: false, paused: true, currentTime: 0 } })); await f.c.start(); await f.c.tick();
+  f.page({ media: { ended: false, paused: false, currentTime: 1 } }); await elapse(f, 600000); assert.equal(f.c.getState().status, 'running'); assert.ok(!f.actions.includes('leave')); assert.equal(f.actions.filter(x => x === 'play').length, 1);
   f.page({ media: { ended: false, paused: true } }); await f.c.tick(); await elapse(f,2000); assert.equal(f.c.getState().status, 'running'); assert.equal(f.actions.filter(x=>x==='play').length,2); assert.ok(!f.actions.includes('leave')); await f.c.pause();
 });
 test('播放成功后快照读取异常必须退出学习页，不能误当原生播放失败', async () => {

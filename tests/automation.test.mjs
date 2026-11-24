@@ -132,10 +132,24 @@ test('播放过的视频跨学习时段重入后，新的暂停播放器可正�
   f.lesson(5); f.page({media:{paused:true,ended:false}}); await f.c.tick(); assert.equal(plays,1); assert.equal(f.c.getState().status,'running'); await f.c.pause();
 });
 
-test('播放成功与下一次轮询之间普通暂停，静默恢复而不立即通知', async () => {
-  let plays=0; const f=setup({}, {play:()=>{plays++;return Promise.resolve(true);}}); await f.ready(); f.lesson(5); f.page({media:{paused:true,ended:false}});
-  await f.c.start(); await f.c.tick(); for(let i=0;i<4;i++) await Promise.resolve(); await f.c.tick();
-  assert.equal(plays,1);assert.equal(f.c.getState().status,'running');await f.elapse(2000);assert.equal(plays,2);assert.ok(!f.actions.includes('leave'));assert.equal(f.notices.length,0);await f.c.pause();
+test('启动调用成功但媒体时间未动，观察后按播放启动故障原地重试', async () => {
+  let plays = 0;
+  const f = setup({}, { play: async () => { plays++; return true; } });
+  await f.ready();
+  f.lesson(5);
+  f.page({ media: { paused: true, ended: false, currentTime: 0 } });
+  await f.c.start();
+  await f.c.tick();
+  await f.elapse(7000);
+  assert.equal(f.c.getState().phase, 'running');
+  await f.elapse(1000);
+  assert.equal(f.c.getState().phase, 'retrying');
+  assert.equal(plays, 1);
+  await f.elapse(5000);
+  assert.equal(plays, 2);
+  assert.equal(f.actions.includes('leave'), false);
+  assert.equal(f.notices.length, 0);
+  await f.c.pause();
 });
 
 test('自动模式下视频结束后平台持续学习中满90秒暂存明确原因并继续下一门', async () => {

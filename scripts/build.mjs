@@ -1,7 +1,7 @@
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 const wdBuildRoot = new URL('../', import.meta.url);
 const wdBuildPackage = JSON.parse(await readFile(new URL('package.json', wdBuildRoot), 'utf8'));
-const wdBuildFiles = ['core', 'adapter', 'queue', 'controller', 'panel', 'main'];
+const wdBuildFiles = ['core', 'adapter', 'queue', 'playback-log', 'controller', 'panel', 'main'];
 const wdBuildSources = await Promise.all(wdBuildFiles.map(async name => {
   const source = await readFile(new URL(`src/${name}.js`, wdBuildRoot), 'utf8');
   return source.replace(/^import\s+[^\r\n]+;\r?$/gmu, '').replace(/^export\s+(?=(?:async\s+)?(?:function|const|let|class)\b)/gmu, '')

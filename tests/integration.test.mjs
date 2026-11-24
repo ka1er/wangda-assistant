@@ -7,7 +7,7 @@ import { createController } from '../src/controller.js';
 import { createPanel } from '../src/panel.js';
 
 function setup() {
-  const dom = new JSDOM('<body></body>', { url: 'https://wangda.chinamobile.com/#/study/subject/detail/s' });
+  const dom = new JSDOM('<body></body>', { url: 'https://wangda.chinamobile.com/#/study/subject/detail/s', pretendToBeVisual: true });
   const w = dom.window; let clock = Date.parse('2026-10-10T02:00:00Z'); const data = new Map();
   const a = createAdapter(w); const c = createController({ adapter: a, owner: 'test', now: () => new Date(clock), setInterval: () => 1, clearInterval: () => {}, storage: { get: key => structuredClone(data.get(key)), set: (key, val) => data.set(key, structuredClone(val)) }, locks: { request: async (_, __, cb) => cb({}) } });
   const page = html => { w.document.body.querySelectorAll(':scope > :not(#wangda-assistant)').forEach(node => node.remove()); const node = w.document.createElement('div'); node.innerHTML = html; w.document.body.append(node); return node; };
@@ -36,7 +36,8 @@ function setup() {
     assert.equal(root.querySelector('[data-candidates]').hidden, true); assert.equal(root.querySelector('[data-draft]').hidden, false);
   };
   const close = () => { panel.destroy(); c.destroy(); w.close(); };
-  subject(); return { w, c, a, page, subject, search, course, complete, elapse, collect, panel, root, click, change, add, close };
+  const advance = ms => { clock += ms; return c.tick(); };
+  subject(); return { w, c, a, page, subject, search, course, complete, elapse, advance, collect, panel, root, click, change, add, close };
 }
 
 for (const [layout, label, count, status] of [['grid', '图卡', 13, 'unknown'], ['list', '列表', 6, 'completed']]) {
@@ -103,6 +104,97 @@ test('原生媒体普通暂停自动原地恢复，保持静音和音量，助�
   await f.c.start();await f.c.tick();assert.equal(media.muted,true);media.muted=false;paused=true;await f.c.tick();await f.elapse(1000);assert.equal(plays,0);await f.elapse(1000);await f.c.tick();
   assert.equal(plays,1);assert.equal(paused,false);assert.equal(media.muted,true);assert.equal(media.volume,.4);assert.match(f.w.location.hash,/subject-course\/a\/6\/s$/u);assert.equal(f.c.getState().status,'running');assert.deepEqual(f.c.getState().tasks[0].done,[]);
   await f.click('run-toggle');await f.elapse(4000);assert.equal(f.c.getState().status,'paused');assert.equal(plays,1);assert.equal(paused,true);f.close();
+});
+
+test('后台原生暂停只尝试一次，计时跳跃不耗失败预算，切回后可复制推进证据', async () => {
+  const f = setup();
+  try {
+    let visibility = 'visible', paused = false, plays = 0, copied = '', denyClipboard = false;
+    Object.defineProperty(f.w.document, 'visibilityState', { get: () => visibility });
+    Object.defineProperty(f.w.navigator, 'clipboard', { value: { writeText: async text => {
+      if (denyClipboard) throw Error('fixture: clipboard denied');
+      copied = text;
+    } } });
+    f.subject('s', [['a', '未开始', true]]);
+    await f.collect();
+    f.w.location.hash = '#/study/course/detail/subject-course/a/6/s';
+    f.course('a', true);
+    const media = f.w.document.createElement('video');
+    f.w.document.querySelector('video').replaceWith(media);
+    Object.defineProperties(media, {
+      paused: { get: () => paused },
+      readyState: { value: 4 },
+    });
+    media.currentTime = 10;
+    media.play = async () => {
+      plays++;
+      if (plays === 1) throw new f.w.DOMException('synthetic secret detail', 'NotAllowedError');
+      paused = false;
+    };
+    assert.equal(f.c.getPlaybackLogText(), '');
+    f.panel.open();
+    f.root.querySelector('[name="playback-log"]').closest('details').open = true;
+    await f.change('[name="playback-log"]', true);
+    await f.c.start();
+    await f.c.tick();
+
+    visibility = 'hidden';
+    f.w.document.dispatchEvent(new f.w.Event('visibilitychange'));
+    paused = true;
+    media.dispatchEvent(new f.w.Event('pause'));
+    assert.equal(plays, 1);
+    await f.advance(61000);
+    await f.advance(60000);
+    assert.equal(plays, 1);
+    assert.equal(f.c.getState().status, 'running');
+    assert.doesNotMatch(f.c.getPlaybackLogText(), /"event":"failure-count"/u);
+
+    visibility = 'visible';
+    f.w.document.dispatchEvent(new f.w.Event('visibilitychange'));
+    await f.elapse(7000);
+    assert.equal(plays, 1);
+    assert.doesNotMatch(f.c.getPlaybackLogText(), /"outcome":"failed"/u);
+    paused = false; // The playback control can still resume the same player.
+    media.currentTime = 11;
+    await f.elapse(1000);
+    const successfulRecoveries = () => f.c.getPlaybackLogText().match(/"outcome":"progress"/gu)?.length || 0;
+    assert.equal(successfulRecoveries(), 1);
+
+    visibility = 'hidden';
+    f.w.document.dispatchEvent(new f.w.Event('visibilitychange'));
+    paused = true;
+    media.dispatchEvent(new f.w.Event('pause'));
+    await f.elapse(1000);
+    assert.equal(plays, 2);
+    assert.equal(paused, false);
+    assert.equal(media.muted, true);
+    assert.equal(successfulRecoveries(), 1);
+    media.currentTime = 12;
+    await f.advance(60000);
+    assert.equal(f.c.getState().status, 'running');
+    assert.match(f.w.location.hash, /subject-course\/a\/6\/s$/u);
+
+    await f.change('[name="playback-log"]', false);
+    await f.click('copy-playback-log');
+    const rows = copied.split('\n').slice(1).map(line => JSON.parse(line));
+    assert.equal(rows.filter(row => row.event === 'play-attempt' && row.visibility === 'hidden').length, 2);
+    assert.ok(rows.some(row => row.event === 'visibility' && row.visibility === 'visible'));
+    assert.ok(rows.some(row => row.event === 'pause-detected' && row.paused && row.currentTime === 10 && row.readyState === 4));
+    assert.ok(rows.some(row => row.event === 'play-result' && row.nativeError === 'NotAllowedError'));
+    assert.ok(rows.some(row => row.event === 'recovery-result' && row.outcome === 'progress' && row.currentTime === 12));
+    assert.ok(rows.some(row => row.event === 'tick-gap' && row.gapMs === 61000));
+    assert.equal(rows.filter(row => row.event === 'failure-count').length, 0);
+    assert.doesNotMatch(copied, /subject-course|synthetic secret detail|正式专区/u);
+    assert.equal(f.c.getPlaybackLogText(), copied);
+    const diagnostics = f.root.querySelector('[name="playback-log"]').closest('details');
+    assert.match(diagnostics.textContent, /诊断日志已复制/u);
+    denyClipboard = true;
+    await f.click('copy-playback-log');
+    const logText = diagnostics.querySelector('textarea');
+    assert.equal(logText.value, copied);
+    assert.equal(logText.selectionEnd, copied.length);
+    assert.match(diagnostics.textContent, /日志已选中/u);
+  } finally { f.close(); }
 });
 
 test('继续进入课程后等待课节和媒体源，首次播放失败也在课程页内重试', async () => {
