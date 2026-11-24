@@ -105,6 +105,134 @@ test('原生媒体普通暂停自动原地恢复，保持静音和音量，助�
   await f.click('run-toggle');await f.elapse(4000);assert.equal(f.c.getState().status,'paused');assert.equal(plays,1);assert.equal(paused,true);f.close();
 });
 
+test('继续进入课程后等待课节和媒体源，首次播放失败也在课程页内重试', async () => {
+  const f = setup();
+  try {
+    const subjectRoute = '#/study/subject/detail/s';
+    const courseRoute = '#/study/course/detail/subject-course/a/6/s';
+    f.subject('s', [['a', '未开始', true]]);
+    await f.collect();
+    await f.c.setAutomation({ enabled: true, resumeOnReload: false });
+    f.w.location.hash = courseRoute;
+    f.course('a', true);
+    await f.c.start();
+    await f.c.tick();
+    f.w.location.hash = '#/home';
+    await f.c.tick();
+    assert.equal(f.c.getState().status, 'paused');
+
+    const navigation = [];
+    for (const name of ['openCourse', 'leaveLearning']) {
+      const original = f.a[name];
+      f.a[name] = (...args) => { navigation.push(name); return original(...args); };
+    }
+    f.subject('s', [['a', '学习中', true]]);
+    assert.equal(f.w.location.hash, subjectRoute);
+    await f.click('run-toggle');
+    await f.c.tick();
+    assert.equal(f.w.location.hash, courseRoute);
+    await f.elapse(2000); // The hash has changed but the subject catalog is still mounted.
+    assert.equal(f.a.read().sectionListReady, false);
+    assert.deepEqual(navigation, ['openCourse']);
+
+    f.course('a', true);
+    const media = f.w.document.createElement('video');
+    f.w.document.querySelector('video').replaceWith(media);
+    let plays = 0, paused = true;
+    Object.defineProperty(media, 'paused', { get: () => paused });
+    media.pause = () => { paused = true; };
+    media.play = async () => {
+      if (++plays === 1) throw new f.w.DOMException('fixture: interrupted while starting', 'AbortError');
+      paused = false;
+    };
+    await f.elapse(3000);
+    assert.equal(f.a.read().sectionListReady, true);
+    assert.equal(f.a.read().mediaReady, false);
+    assert.equal(plays, 0);
+    assert.equal(f.c.getState().phase, 'running');
+    assert.equal(f.w.location.hash, courseRoute);
+
+    media.preload = 'none';
+    media.src = '/synthetic-media.mp4';
+    assert.equal(media.readyState, media.HAVE_NOTHING);
+    assert.equal(f.a.read().mediaReady, true);
+    await f.elapse(1000);
+    assert.equal(plays, 1);
+    assert.equal(f.c.getState().phase, 'retrying');
+    assert.match(f.c.getState().message, /1\/3/u);
+    assert.equal(f.w.location.hash, courseRoute);
+    await f.elapse(5000);
+    assert.equal(plays, 2);
+    await f.elapse(1000);
+    assert.equal(f.c.getState().phase, 'running');
+    assert.equal(f.c.getState().currentPlayback.paused, false);
+    assert.equal(f.w.location.hash, courseRoute);
+    assert.deepEqual(navigation, ['openCourse']);
+    assert.deepEqual(f.c.getState().tasks[0].deferred, []);
+  } finally { f.close(); }
+});
+
+test('课程加载中回到来源专区时暂停，保留课程并且不再导航', async () => {
+  const f = setup();
+  try {
+    f.subject('s', [['a', '未开始', true]]);
+    await f.collect();
+    await f.c.setAutomation({ enabled: true, resumeOnReload: false });
+    const navigation = [];
+    for (const name of ['openCourse', 'leaveLearning']) {
+      const original = f.a[name];
+      f.a[name] = (...args) => { navigation.push(name); return original(...args); };
+    }
+    await f.c.start();
+    await f.c.tick();
+    await f.elapse(1000);
+    f.subject('s', [['a', '学习中', true]]);
+    await f.elapse(1000);
+    assert.equal(f.c.getState().status, 'paused');
+    assert.match(f.c.getState().message, /已离开目标课程/u);
+    await f.elapse(32000);
+    assert.equal(f.w.location.hash, '#/study/subject/detail/s');
+    assert.deepEqual(navigation, ['openCourse']);
+    assert.deepEqual(f.c.getState().tasks[0].deferred, []);
+  } finally { f.close(); }
+});
+
+test('播放器持续拒绝时只原地重试三次，暂存原因并保留课程页', async () => {
+  const f = setup();
+  try {
+    f.subject('s', [['a', '未开始', true]]);
+    await f.collect();
+    await f.c.setAutomation({ enabled: true, resumeOnReload: false });
+    await f.c.start();
+    await f.c.tick();
+    const courseRoute = '#/study/course/detail/subject-course/a/6/s';
+    f.course('a', true);
+    const media = f.w.document.createElement('video');
+    f.w.document.querySelector('video').replaceWith(media);
+    media.src = '/synthetic-media.mp4';
+    media.pause = () => {};
+    let plays = 0;
+    media.play = async () => { plays++; throw new f.w.DOMException('fixture: autoplay blocked', 'NotAllowedError'); };
+    const navigation = [];
+    for (const name of ['openCourse', 'leaveLearning']) {
+      const original = f.a[name];
+      f.a[name] = (...args) => { navigation.push(name); return original(...args); };
+    }
+    await f.elapse(1000);
+    for (const [index, delay] of [5000, 10000, 20000].entries()) {
+      assert.match(f.c.getState().message, new RegExp(`${index + 1}/3`, 'u'));
+      await f.elapse(delay);
+      assert.equal(f.w.location.hash, courseRoute);
+      assert.equal(plays, index + 2);
+    }
+    assert.equal(f.c.getState().status, 'paused');
+    assert.match(f.c.getState().tasks[0].deferred[0].reason, /已重试三次/u);
+    await f.elapse(60000);
+    assert.equal(plays, 4);
+    assert.deepEqual(navigation, []);
+  } finally { f.close(); }
+});
+
 test('视频延迟创建及初始化开声在轮询前静音，暂停与关闭选项后媒体事件不静音', async () => {
   const f=setup();f.subject('s',[['a','未开始',true]]);await f.collect();await f.c.start();await f.c.tick();f.course('a',true);await Promise.resolve();const media=f.w.document.querySelector('video');assert.equal(media.muted,true);
   for(const type of ['loadedmetadata','play','playing','volumechange']){media.muted=false;media.dispatchEvent(new f.w.Event(type));assert.equal(media.muted,true,type);}await f.c.pause();media.muted=false;media.dispatchEvent(new f.w.Event('play'));await Promise.resolve();assert.equal(media.muted,false);

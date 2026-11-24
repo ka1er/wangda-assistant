@@ -8,7 +8,7 @@
 
 当前目标是让用户输入专区名称、确认课程后，可以依次执行多个专区，减少返回页面处理的次数。课程范围由用户勾选，不再依赖对学习通知中“必修、选修”的文字推断。
 
-- 本轮验证版本为 `0.1.0-beta.15`，版本分支为 `beta/0.1.0-beta.15`，入口为 `dist/wangda-assistant.user.js`。固定更新分支 `beta-channel` 当前提供 beta.14。
+- 本轮版本为 `0.1.0-beta.16`，版本分支为 `beta/0.1.0-beta.16`，入口为 `dist/wangda-assistant.user.js`。发布到版本分支和固定更新分支 `beta-channel`。
 - beta.10 功能提交 `3a66b1798c4549b0df6eb15c41c5da282b43409d` 已通过检查，发布目标为 `beta/0.1.0-beta.10` 与固定 `beta-channel`。2026-10-13 首次上传曾遇 Git HTTPS TLS/EOF 中断；使用同一现有代理的 SOCKS 协议后恢复 Git 连接，仅在本次 Git 命令指定协议，不更改或关闭用户全局代理设置。以远端提交和已检查的本地文件树核对分发内容。
 - **2026-10-13 已完成 beta.10 发布核验。** 版本分支和固定通道均已更新，固定脚本地址返回 HTTP 200，版本为 beta.10，全文与本地已检查构建一致。上传前重新运行 `npm run check`，219/219 通过；默认分支仍为 beta.5，未创建稳定版或正式 Release。
 - 独立诊断脚本：`0.1.0-test.1`，入口 `dist/wangda-playback-diagnostics.user.js`。
