@@ -24,10 +24,10 @@ export function createPanel(win, controller, version) {
   const button = (action, text, parent, handler, edit = true) => {
     const node = element('button', text, parent); node.type = 'button'; node.dataset.action = action;
     if (edit) editors.add(node);
-    node.addEventListener('click', async () => {
+    node.addEventListener('click', async event => {
       if (node.disabled || busy.has(node)) return;
       busy.add(node); node.disabled = true;
-      try { await handler(); } catch { diagnostic.textContent = '操作未完成，请查看当前状态后重试。'; }
+      try { await handler(event); } catch { diagnostic.textContent = '操作未完成，请查看当前状态后重试。'; }
       finally { busy.delete(node); node.disabled = false; render(controller.getState()); }
     });
     return node;
@@ -35,6 +35,9 @@ export function createPanel(win, controller, version) {
   const isRunning = state => ['running', 'preparing', 'waiting'].includes(state.status) || state.phase === 'resuming';
   const runButton = button('run-toggle', '开始', headerButtons, () => isRunning(controller.getState()) ? controller.pause() : startQueue(), false);
   const toggle = button('toggle', '展开', headerButtons, () => setOpen(body.hidden), false); toggle.setAttribute('aria-expanded', 'false');
+  const playGesture = button('play-current', '播放当前课节', header, event => controller.playFromGesture(event), false);
+  playGesture.className = 'primary';
+  playGesture.style.marginTop = '8px';
   const progress = element('div', '', header); progress.className = 'progress'; progress.setAttribute('role', 'status'); progress.setAttribute('aria-live', 'polite');
   const compact = element('div', '', header); compact.className = 'muted compact-course';
   const compactTime = element('div', '', header); compactTime.className = 'muted playback-time'; compactTime.dataset.playbackTime = '';
@@ -44,7 +47,7 @@ export function createPanel(win, controller, version) {
   const message = element('div', '', execution);
   const problemBox = element('div', '', body); problemBox.className = 'problem'; problemBox.dataset.problem = '';
   const problemText = element('div', '', problemBox); const problemActions = element('div', '', problemBox); problemActions.className = 'buttons';
-  button('retry', '重试本课程', problemActions, () => controller.retry(latest.problem?.taskId, latest.problem?.courseId));
+  button('retry', '重试本课程', problemActions, () => controller.retry(latest.problem?.taskId, latest.problem?.courseId, 'panel-retry'));
   button('skip', '跳过并继续', problemActions, () => controller.skipCurrent());
   const queueView = element('div', '', body); queueView.dataset.view = 'queue';
   const queueHeading = element('div', '', queueView); queueHeading.className = 'headline'; element('h2', '任务队列', queueHeading);
@@ -161,10 +164,17 @@ export function createPanel(win, controller, version) {
     if (JSON.stringify(next) !== JSON.stringify(controller.getState().window) && !await controller.setWindow(next)) return false;
     dirty.clear(); return true;
   };
+  const hasRunHistory = state => Boolean(state.currentCourseId) || state.tasks.some(item => item.current || item.done.length || item.skipped.length || item.deferred?.length);
   const startQueue = async () => {
     if (starting) return;
     starting = true; render(controller.getState());
-    try { if (await saveWindow()) await controller.start(); }
+    const continuing = hasRunHistory(controller.getState());
+    try {
+      if (await saveWindow()) {
+        if (continuing) await controller.start(null, 'panel-continue');
+        else await controller.start();
+      }
+    }
     finally { starting = false; render(controller.getState()); }
   };
   const canSort = () => !reordering && !starting && !latest.unavailable && latest.status !== 'preparing' && latest.phase !== 'resuming';
@@ -225,7 +235,7 @@ export function createPanel(win, controller, version) {
           catch { diagnostic.textContent = '勾选未能保存，请重试。'; }
           finally { busy.delete(input); render(controller.getState()); }
         });
-        const retry = item ? button(`retry-${item.id}-${course.id}`, '重试', label, () => controller.retry(item.id, course.id)) : null;
+        const retry = item ? button(`retry-${item.id}-${course.id}`, '重试', label, () => controller.retry(item.id, course.id, 'panel-retry')) : null;
         row = { label, input, caption, meta, section, retry, time, playback }; view.nodes.set(course.id, row);
       }
       const recheck = item?.recheck?.includes(course.id);
@@ -358,13 +368,15 @@ export function createPanel(win, controller, version) {
     for (const control of problemActions.querySelectorAll('button')) control.disabled ||= adding;
     const hasPending = state.tasks.some(item => item.subject && eligible(item).some(course => !isDone(item, course.id) && !item.skipped.includes(course.id) && !item.deferred?.some(entry => entry.courseId === course.id)));
     const cannotStart = starting || state.unavailable || adding || Boolean(state.draft) || !hasPending;
-    const hasStarted = Boolean(state.currentCourseId) || state.tasks.some(item => item.current || item.done.length || item.skipped.length || item.deferred?.length);
+    const hasStarted = hasRunHistory(state);
     startButton.disabled = running || cannotStart;
     const completedCount = state.tasks.filter(item => completeTask(item) && !(running && item.id === state.activeTaskId)).length;
     clearCompleted.textContent = `清除已完成${completedCount ? `（${completedCount}）` : ''}`;
     clearCompleted.disabled = !completedCount || state.unavailable || state.status === 'preparing' || state.phase === 'resuming';
     runButton.textContent = running ? '暂停' : state.status === 'complete' ? '已完成' : hasStarted ? '继续' : '开始';
     runButton.disabled = starting || (!running && cannotStart); toggle.disabled = false;
+    playGesture.hidden = !state.playGesture;
+    playGesture.disabled = !state.playGesture;
     for (const control of busy) control.disabled = true;
   }
   const unsubscribe = controller.subscribe(render);

@@ -163,7 +163,7 @@ test('标题收起时显示进度，运行可暂停，暂停后可继续', async
   const header = f.root.querySelector('header'); assert.match(header.textContent, /学习中/u); assert.match(header.textContent, /总完成 1\/3 门/u);
   const run = header.querySelector('[data-action="run-toggle"]'); assert.ok(run); assert.equal(run.disabled, false); assert.equal(run.textContent, '暂停'); await f.click('run-toggle');
   await f.click('toggle'); assert.match(f.root.querySelector('.task-current').textContent, /课节 · 视频课节/u); assert.match(f.root.querySelector('.task-current').textContent, /课程a/u);
-  await f.click('toggle'); f.emit({ status: 'paused' }); assert.equal(body.hidden, true); assert.equal(run.textContent, '继续'); await f.click('run-toggle'); assert.equal(f.calls.filter(call => call[0] === 'pause').length, 1); assert.deepEqual(f.calls.at(-1), ['start']); f.close();
+  await f.click('toggle'); f.emit({ status: 'paused' }); assert.equal(body.hidden, true); assert.equal(run.textContent, '继续'); await f.click('run-toggle'); assert.equal(f.calls.filter(call => call[0] === 'pause').length, 1); assert.deepEqual(f.calls.at(-1), ['start', null, 'panel-continue']); f.close();
 });
 
 test('任务详情支持勾选、更新和移出，运行时只禁编辑，完成课程可折叠且实际done优先', async () => {
@@ -172,7 +172,7 @@ test('任务详情支持勾选、更新和移出，运行时只禁编辑，完�
   await f.click('detail-t'); const detail = f.root.querySelector('[data-task-detail="t"]'); assert.equal(detail.hidden, false);
   const completed = detail.querySelector('details[data-completed]'); assert.equal(completed.open, false); assert.match(completed.textContent, /课程a.*已完成/su); assert.match(detail.textContent, /已跳过/u); assert.match(detail.textContent, /待确认/u); assert.match(detail.textContent, /选修/u);
   const check = detail.querySelector('[data-course="d"]'); check.checked = true; check.dispatchEvent(new f.dom.window.Event('change')); for (let i = 0; i < 20; i++) await Promise.resolve(); assert.deepEqual(f.calls.at(-1), ['setSelection', 't', 'd', true]);
-  await f.click('refresh-t'); await f.click('retry-t-c'); assert.deepEqual(f.calls.at(-1), ['retry', 't', 'c']); completed.open = true;
+  await f.click('refresh-t'); await f.click('retry-t-c'); assert.deepEqual(f.calls.at(-1), ['retry', 't', 'c', 'panel-retry']); completed.open = true;
   f.emit({ status: 'running' }); assert.equal(detail.querySelector('[data-course="d"]').disabled, true); assert.equal(f.root.querySelector('[data-action="refresh-t"]').disabled, true); assert.equal(f.root.querySelector('[data-action="detail-t"]').disabled, false); assert.equal(completed.open, true);
   await f.click('detail-t'); await f.click('detail-t'); assert.equal(detail.hidden, false); f.emit({ status: 'paused' }); await f.click('remove-t'); assert.deepEqual(f.calls.at(-1), ['removeTask', 't']); f.close();
 });
@@ -187,7 +187,7 @@ test('时间设置保存和开始前保存，tick保留输入焦点、脏值、�
 
 test('问题对应专区和课程并允许重试、跳过；跳过和空选择不能标成全完成', async () => {
   const t = task(); t.skipped = ['a']; const f = fixture({ tasks: [t], problem: { taskId: 't', courseId: 'a', reason: '<script>需人工确认</script>' } }); f.panel.open();
-  const problem = f.root.querySelector('[data-problem]'); assert.match(problem.textContent, /正式专区标题.*课程a.*需人工确认/su); assert.equal(problem.querySelector('script'), null); await f.click('retry'); await f.click('skip'); assert.deepEqual(f.calls.slice(-2), [['retry', 't', 'a'], ['skipCurrent']]);
+  const problem = f.root.querySelector('[data-problem]'); assert.match(problem.textContent, /正式专区标题.*课程a.*需人工确认/su); assert.equal(problem.querySelector('script'), null); await f.click('retry'); await f.click('skip'); assert.deepEqual(f.calls.slice(-2), [['retry', 't', 'a', 'panel-retry'], ['skipCurrent']]);
   assert.doesNotMatch(f.root.querySelector('[data-task-summary="t"]').textContent, /全部完成/u);
   t.skipped = []; t.courses.forEach(c => { c.selected = false; }); f.emit({ tasks: [t], problem: null }); assert.match(f.root.querySelector('[data-task-summary="t"]').textContent, /尚未选择/u); f.close();
 });

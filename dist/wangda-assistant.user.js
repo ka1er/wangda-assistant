@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         网大助手
 // @namespace    wangda-assistant
-// @version      0.1.0-beta.18
+// @version      0.1.0-beta.19
 // @updateURL    https://raw.githubusercontent.com/ka1er/wangda-assistant/refs/heads/beta-channel/dist/wangda-assistant.user.js
 // @downloadURL  https://raw.githubusercontent.com/ka1er/wangda-assistant/refs/heads/beta-channel/dist/wangda-assistant.user.js
 // @description  手动勾选课程、管理多专区任务队列，按平台完成状态连续学习
@@ -394,14 +394,13 @@ function wdAdapterVisible(element) {
   return element.isConnected;
 }
 
-function wdAdapterMediaHasBinding(media, attrName, expected) {
-  if (!media || !expected) return false;
+function wdAdapterMediaBinding(media, attrName) {
   const docBody = media.ownerDocument?.body;
   for (let current = media; current && current !== docBody; current = current.parentElement) {
     const value = wdAdapterAttribute(current, attrName);
-    if (value !== null && value === expected) return true;
+    if (value) return value;
   }
-  return false;
+  return null;
 }
 
 const wdAdapterMediaStates = new WeakMap();
@@ -443,24 +442,29 @@ function wdAdapterPlayerControls(media) {
 function wdAdapterResolveMedia(document, page) {
   const all = [...document.querySelectorAll('video,audio')];
   const visible = all.filter(wdAdapterVisible);
-  if (!visible.length) return { status: 'none', target: null, count: 0, totalCount: all.length, tag: null, reason: all.length ? 'only-hidden-media' : 'no-media' };
-  if (visible.length === 1) return { status: 'resolved', target: visible[0], count: 1, totalCount: all.length, tag: visible[0].tagName.toLowerCase(), reason: 'single-visible' };
-  if (page?.kind === 'course') {
-    const activeId = page.activeSectionId;
-    const activeEl = activeId ? wdAdapterSectionElements(document).find(element => wdAdapterSectionId(element) === activeId && wdAdapterAttribute(element, 'course-id') === page.courseId) : null;
-    const activeResourceId = activeEl ? wdAdapterAttribute(activeEl, 'resource-id') : null;
-    if (activeId || activeResourceId) {
-      const sectionBound = visible.filter(media => wdAdapterMediaHasBinding(media, 'section-id', activeId) || wdAdapterMediaHasBinding(media, 'resource-id', activeResourceId));
-      if (sectionBound.length === 1) {
-        return { status: 'resolved', target: sectionBound[0], count: visible.length, totalCount: all.length, tag: sectionBound[0].tagName.toLowerCase(), reason: 'section-bound' };
-      }
-    }
-    if (page.courseId) {
-      const courseBound = visible.filter(media => wdAdapterMediaHasBinding(media, 'course-id', page.courseId));
-      if (courseBound.length === 1) {
-        return { status: 'resolved', target: courseBound[0], count: visible.length, totalCount: all.length, tag: courseBound[0].tagName.toLowerCase(), reason: 'course-bound' };
-      }
-    }
+  const none = reason => ({ status: 'none', target: null, count: visible.length, totalCount: all.length, tag: null, reason });
+  const resolved = (target, reason) => ({ status: 'resolved', target, count: visible.length, totalCount: all.length, tag: target.tagName.toLowerCase(), reason });
+  if (!visible.length) return none(all.length ? 'only-hidden-media' : 'no-media');
+
+  const activeId = page.kind === 'course' ? page.activeSectionId : null;
+  const activeEl = activeId && wdAdapterSectionElements(document).find(element => wdAdapterSectionId(element) === activeId
+    && wdAdapterAttribute(element, 'course-id') === page.courseId);
+  const resourceId = activeEl ? wdAdapterAttribute(activeEl, 'resource-id') : null;
+  const bindings = visible.map(target => ({
+    target, section: wdAdapterMediaBinding(target, 'section-id'),
+    resource: wdAdapterMediaBinding(target, 'resource-id'), course: wdAdapterMediaBinding(target, 'course-id'),
+  }));
+  const conflicts = (actual, expected) => Boolean(actual && expected && actual !== expected);
+  const eligible = bindings.filter(item => !conflicts(item.section, activeId) && !conflicts(item.resource, resourceId)
+    && !conflicts(item.course, page.courseId));
+  if (!eligible.length) return none('binding-mismatch');
+
+  const sectionBound = eligible.filter(item => (activeId && item.section === activeId) || (resourceId && item.resource === resourceId));
+  if (sectionBound.length === 1) return resolved(sectionBound[0].target, 'section-bound');
+  if (!sectionBound.length) {
+    if (eligible.length === 1) return resolved(eligible[0].target, visible.length === 1 ? 'single-visible' : 'unique-compatible');
+    const courseBound = eligible.filter(item => page.courseId && item.course === page.courseId);
+    if (courseBound.length === 1) return resolved(courseBound[0].target, 'course-bound');
   }
   return { status: 'ambiguous', target: null, count: visible.length, totalCount: all.length, tag: null, reason: 'multiple-visible-media' };
 }
@@ -762,7 +766,7 @@ function readPage(document, hash) {
       const player = wdAdapterMediaState(media);
       const controls = new Set(wdAdapterPlayerControls(media).values());
       page.player = { id: player.id, seekRevision: player.seekRevision, seeking: media.seeking, readyState: media.readyState,
-        control: controls.size > 1 ? 'mixed' : controls.values().next().value ?? null };
+        muted: Boolean(media.muted), control: controls.size > 1 ? 'mixed' : controls.values().next().value ?? null };
       // A source lets play() start loading even when the platform uses preload="none".
       page.mediaReady = !media.paused || media.ended || media.readyState >= media.HAVE_METADATA
         || Boolean(media.currentSrc || media.srcObject || media.getAttribute('src')?.trim()
@@ -934,10 +938,12 @@ function createAdapter(win) {
     win.location.hash = route;
     return true;
   };
-  const markMediaCommand = (media, type, call) => {
+  const visibility = () => win.document.visibilityState === 'visible' ? 'visible' : 'hidden';
+  const userActivation = () => win.navigator.userActivation?.isActive ?? null;
+  const markMediaCommand = (media, type, call, playback = null) => {
     const paused = media.paused;
     const result = call();
-    if (media.paused !== paused) wdAdapterMediaState(media).command = { type, at: win.performance.now() };
+    if (media.paused !== paused) wdAdapterMediaState(media).command = { type, at: win.performance.now(), playback };
     return result;
   };
   const pauseMedia = () => {
@@ -949,10 +955,10 @@ function createAdapter(win) {
   };
   return {
     read,
-    visibility: () => win.document.visibilityState === 'visible' ? 'visible' : 'hidden',
+    visibility, userActivation,
     watchPlayback(listener) {
       const doc = win.document;
-      const visibility = () => listener('visibility');
+      const visibilityChange = () => listener('visibility');
       const route = event => listener('route', wdAdapterRoute(new URL(event.newURL || win.location.href).hash));
       const controlInput = event => {
         if (!event.isTrusted || wdAdapterRoute(win.location.hash).kind !== 'course') return;
@@ -963,8 +969,10 @@ function createAdapter(win) {
         const type = wdAdapterPlayerControls(target).get(control);
         if (!type || target.paused !== (type === 'play')) return;
         const player = wdAdapterMediaState(target);
-        player.controlInput = { type, at: win.performance.now() };
-        listener('control-input', { id: player.id, source: 'user', action: type, trusted: true });
+        const playback = { initiator: 'player-control', gesture: true, userActivation: userActivation(),
+          pausedBefore: target.paused, visibilityBefore: visibility(), mutedBefore: target.muted };
+        player.controlInput = { type, at: win.performance.now(), playback };
+        listener('control-input', { id: player.id, source: 'user', action: type, trusted: true, playback });
       };
       const media = event => {
         if (!event.target?.matches?.('video,audio')) return;
@@ -980,23 +988,36 @@ function createAdapter(win) {
           return;
         }
         let source = event.isTrusted ? 'platform-or-browser' : 'unattributed';
-        if (type === 'playing') source = player.playSource || source;
-        else {
-          if (player.command?.type === type && at - player.command.at < 2000) source = 'assistant';
-          else if (event.isTrusted && player.controlInput?.type === type && at - player.controlInput.at < 2000) source = 'user';
+        let playback = null;
+        const precedingPlay = player.playback?.initiator ?? null;
+        if (type === 'playing') {
+          source = player.playSource || source;
+          playback = player.playback;
+        } else {
+          if (player.command?.type === type && at - player.command.at < 2000) {
+            source = 'assistant';
+            playback = player.command.playback;
+          } else if (event.isTrusted && player.controlInput?.type === type && at - player.controlInput.at < 2000) {
+            source = 'user';
+            playback = player.controlInput.playback;
+          }
           player.command = player.controlInput = null;
           player.playSource = type === 'play' ? source : null;
-          if (type === 'play') player.lastSampleAt = null;
+          if (type === 'play') {
+            player.playback = playback;
+            player.lastSampleAt = null;
+          }
         }
-        listener(type, { id: player.id, source, trusted: event.isTrusted });
+        listener(type, { id: player.id, source, trusted: event.isTrusted, playback,
+          pausedAfter: target.paused, visibilityAfter: visibility(), precedingPlay });
       };
       const mediaEvents = ['play', 'playing', 'pause', 'timeupdate', 'seeking'];
-      doc.addEventListener('visibilitychange', visibility);
+      doc.addEventListener('visibilitychange', visibilityChange);
       win.addEventListener('hashchange', route);
       doc.addEventListener('click', controlInput, true);
       for (const type of mediaEvents) doc.addEventListener(type, media, true);
       return () => {
-        doc.removeEventListener('visibilitychange', visibility);
+        doc.removeEventListener('visibilitychange', visibilityChange);
         win.removeEventListener('hashchange', route);
         doc.removeEventListener('click', controlInput, true);
         for (const type of mediaEvents) doc.removeEventListener(type, media, true);
@@ -1076,7 +1097,23 @@ function createAdapter(win) {
       if (resolved.status !== 'resolved') return false;
       const media = resolved.target;
       if (!media.paused || media.ended) return false;
-      try { if (mute) media.muted = true; await markMediaCommand(media, 'play', () => media.play()); return true; }
+      if (expected?.gesture && userActivation() === false) {
+        expected.onNativeError?.('NotAllowedError');
+        return false;
+      }
+      const playback = { initiator: expected?.initiator ?? 'queue-start', gesture: expected?.gesture === true,
+        userActivation: userActivation(), pausedBefore: media.paused, visibilityBefore: visibility(), mutedBefore: media.muted };
+      try {
+        let pendingPlay;
+        try {
+          if (mute) media.muted = true;
+          pendingPlay = markMediaCommand(media, 'play', () => media.play(), playback);
+        } finally {
+          expected?.onCall?.({ ...playback, pausedAfter: media.paused, visibilityAfter: visibility(), mutedAfter: media.muted });
+        }
+        await pendingPlay;
+        return true;
+      }
       catch (error) {
         const name = error?.name;
         expected?.onNativeError?.(['NotAllowedError', 'NotSupportedError', 'AbortError', 'SecurityError'].includes(name) ? name : 'OtherError');
@@ -1190,7 +1227,8 @@ function createPlaybackLog(now) {
       at: now().toISOString(), event, visibility, runnerStatus, page: pageKind, route: routeNumber || null,
       player: media?.id ?? null, paused: media?.paused ?? null, ended: media?.ended ?? null,
       currentTime: wdPlaybackNumber(media?.currentTime), readyState: media?.readyState ?? null,
-      control: media?.control ?? null, courseRetries, resumeFailures, ...details,
+      control: media?.control ?? null, muted: media?.muted ?? null, mediaTag: media?.tag ?? null,
+      mediaTarget: media?.target ?? null, visiblePlayers: media?.count ?? null, courseRetries, resumeFailures, ...details,
     };
     next = (next + 1) % wdPlaybackLogLimit;
     total += 1;
@@ -1202,7 +1240,9 @@ function createPlaybackLog(now) {
     observe(page, context) {
       if (!enabled) return;
       if (page.route === route && !Object.hasOwn(page, 'media')) return;
-      media = page.media ? { ...page.media, id: page.player?.id, readyState: page.player?.readyState, control: page.player?.control } : null;
+      media = page.media || page.mediaTarget ? { ...page.media, id: page.player?.id, readyState: page.player?.readyState,
+        control: page.player?.control, muted: page.player?.muted, tag: page.mediaTarget?.tag,
+        target: page.mediaTarget?.reason, count: page.mediaTarget?.count } : null;
       if (page.route === route) return;
       route = page.route;
       pageKind = page.kind;
@@ -1306,6 +1346,7 @@ function createController(options) {
   let held = false;
   let acquiring = false;
   let releaseLock = null;
+  let lockRequest = null;
   let runId = null;
   let generation = 0;
   let timer = null;
@@ -1319,6 +1360,7 @@ function createController(options) {
   let needOpen = false;
   let ticking = false;
   let mediaHealth = null;
+  let gesturePlayback = null;
   let playbackAttention = null;
   let stopMediaWatch = null;
   let recovery = null;
@@ -1334,7 +1376,7 @@ function createController(options) {
   const listeners = new Set();
   const copy = value => JSON.parse(JSON.stringify(value));
   const isDone = (item, id) => Boolean(item?.done?.includes(id) && !item.recheck?.includes(id));
-  const getState = () => ({ status, phase: restorePending ? 'resuming' : recovery?.network ? 'offline' : recovery ? 'retrying' : confirmWait ? 'confirming' : status, message, unavailable: blocked, window: copy(record?.window || defaultWindow), automation: copy(record?.automation || defaultAutomation), tasks: copy(record?.tasks || []), activeTaskId: record?.activeTaskId || null, currentCourseId: task?.current || null, currentSectionTitle, currentPlayback: copy(currentPlayback), candidates: copy(candidates), draft: copy(draft), problem: copy(problem) });
+  const getState = () => ({ status, playGesture: Boolean(gesturePlayback?.ready && visibility === 'visible'), phase: restorePending ? 'resuming' : recovery?.network ? 'offline' : recovery ? 'retrying' : confirmWait ? 'confirming' : status, message, unavailable: blocked, window: copy(record?.window || defaultWindow), automation: copy(record?.automation || defaultAutomation), tasks: copy(record?.tasks || []), activeTaskId: record?.activeTaskId || null, currentCourseId: task?.current || null, currentSectionTitle, currentPlayback: copy(currentPlayback), candidates: copy(candidates), draft: copy(draft), problem: copy(problem) });
   const emit = () => { const state = getState(); for (const listener of listeners) listener(state); };
   const tell = text => { message = text; emit(); return false; };
   const milliseconds = () => now().getTime();
@@ -1425,6 +1467,7 @@ function createController(options) {
     }
   };
   const stop = (text, leave = false, complete = false, preserveRun = false) => {
+    gesturePlayback = null;
     currentPlayback = null;
     const wasRunning = status === 'running';
     restorePending = false;
@@ -1483,7 +1526,8 @@ function createController(options) {
     acquiring = true;
     const token = generation;
     return new Promise(resolve => {
-      Promise.resolve().then(() => locks.request(wdControllerLock, { mode: 'exclusive', ifAvailable: true }, async lock => {
+      // A release resolves the lease holder before the browser finishes its lock request.
+      lockRequest = Promise.resolve(lockRequest).then(() => locks.request(wdControllerLock, { mode: 'exclusive', ifAvailable: true }, async lock => {
         acquiring = false;
         if (!lock || destroyed || generation !== token) { resolve(tell('另一标签正在操作任务，请先在那里暂停。')); return; }
         try {
@@ -1515,11 +1559,12 @@ function createController(options) {
   const ensureRecord = () => { if (!record) record = { version: 2, taskId: unique(), revision: 0, window: copy(defaultWindow), tasks: [], activeTaskId: null }; };
   const watch = () => { if (timer === null) timer = schedule(() => { void tick(); }, 1000); };
   const editable = () => !destroyed && !blocked && !restorePending && !['running', 'preparing', 'waiting'].includes(status);
-  const edit = async fn => {
+  const edit = async (fn, retainRun = false) => {
     if (!editable()) return tell('请先暂停，再修改任务。');
     const token = generation;
     if (!await acquire() || token !== generation || !held || !verify()) return false;
-    try { return await fn(); } catch (error) { return storageError(error); } finally { release(); }
+    try { return await fn(); } catch (error) { return storageError(error); }
+    finally { if (!retainRun || !['running', 'waiting'].includes(status)) release(); }
   };
   const validPage = (page, subject = null) => page.kind === 'subject' && typeof page.subjectId === 'string' && page.title?.trim() && page.route === `#/study/subject/detail/${page.subjectId}` && page.courses?.length && (!subject || (page.subjectId === subject.id && normalizeTitle(page.title) === normalizeTitle(subject.title)));
   const collectPage = (page, refreshId = null) => {
@@ -1685,7 +1730,7 @@ function createController(options) {
       }) || null;
     } catch { /* Polling still applies muting if media events cannot be watched. */ }
   };
-  const start = async (preferred = null) => {
+  const start = async (preferred = null, initiator = null) => {
     if (!editable() || !record || !record.tasks.length) return tell('请先添加专题任务。');
     if (!isWithinWindow(now(), record.window) && !record.automation.enabled) return tell('当前不在允许的北京时间学习时段内。');
     const preferredTask = preferred && record.tasks.find(item => item.id === preferred.taskId);
@@ -1696,6 +1741,8 @@ function createController(options) {
     if (!await acquire() || token !== generation || !held || !verify()) return false;
     record.activeTaskId = entry.item.id; task = entry.item; task.current = entry.course.id; problem = null; currentSectionTitle = ''; currentPlayback = null;
     playbackAttention = null;
+    gesturePlayback = ['panel-continue', 'panel-retry'].includes(initiator) ? { initiator } : null;
+    if (gesturePlayback) logPlayback('gesture-prepare', { initiator });
     record.runRequested = record.automation.enabled;
     if (!persist()) return false;
     generation += 1; restorePending = false; status = isWithinWindow(now(), record.window) ? 'running' : 'waiting'; needOpen = true;
@@ -1709,7 +1756,9 @@ function createController(options) {
     message = status === 'waiting' ? `等待学习时段 ${record.window.start}—${record.window.end}（北京时间），到时自动继续。` : '正在按平台课节状态连续学习。';
     if (status === 'waiting') waitWindow();
     else { watchMedia(); muteCourse(entry.course); }
-    watch(); emit(); return true;
+    watch(); emit();
+    if (gesturePlayback && status === 'running') void tick();
+    return true;
   };
   const pause = async () => {
     restorePending = false;
@@ -1740,6 +1789,7 @@ function createController(options) {
     if (expectation.kind === 'course') { sectionConfirm = null; lastOwnedPage = null; }
   };
   const nextCourse = (page, leaveWhenDone = true) => {
+    gesturePlayback = null;
     currentPlayback = null;
     const entry = nextEntry();
     if (!entry) {
@@ -1815,6 +1865,7 @@ function createController(options) {
     message = `${reason} 正在等待重试 ${attempt}/3。`; emit();
   };
   const waitWindow = () => {
+    gesturePlayback = null;
     currentPlayback = null;
     stopMediaWatch?.(); stopMediaWatch = null;
     if (!record.automation.enabled) { stop('已到学习时段边界，已停止媒体并退出学习页。', true); return; }
@@ -1831,18 +1882,20 @@ function createController(options) {
     pending = grace = loading = confirmWait = sectionConfirm = null; needOpen = true;
     status = 'waiting'; message = `等待下次学习时段 ${record.window.start}—${record.window.end}（北京时间），到时自动继续。`; emit();
   };
-  const retry = async (taskId = problem?.taskId, courseId = problem?.courseId) => {
+  const retry = async (taskId = problem?.taskId, courseId = problem?.courseId, initiator = null) => {
     logPlayback('retry-start', { mode: 'manual' });
-    const changed = await edit(() => {
+    const started = await edit(() => {
       const item = record?.tasks.find(item => item.id === taskId);
       if (!item?.courses.some(course => course.id === courseId)) return false;
       item.skipped = item.skipped.filter(id => id !== courseId);
       if (!item.recheck?.includes(courseId)) item.done = item.done.filter(id => id !== courseId);
       item.deferred = (item.deferred || []).filter(entry => entry.courseId !== courseId);
       item.courses.find(course => course.id === courseId).selected = true;
-      record.activeTaskId = item.id; item.current = courseId; problem = null; return persist();
-    });
-    const started = changed && await start({ taskId, courseId });
+      record.activeTaskId = item.id; item.current = courseId; problem = null;
+      if (!persist()) return false;
+      // Start under the lock already held by the queue edit.
+      return start({ taskId, courseId }, initiator);
+    }, true);
     logPlayback('retry-end', { mode: 'manual', outcome: started ? 'started' : 'not-started' });
     return started;
   };
@@ -1880,7 +1933,9 @@ function createController(options) {
       if (!matchesCourse(latest, current) || latest.activeSectionId !== request.sectionId || latest.player?.id !== health.playerId) return;
       request.result = result;
       observePlayback(latest);
-      logPlayback('play-result', { mode: request.resume ? 'resume' : 'start', result, nativeError: request.nativeError ?? null });
+      logPlayback('play-result', { mode: request.resume ? 'resume' : 'start', initiator: request.initiator,
+        gesture: request.gesture, result, nativeError: request.nativeError ?? null,
+        pausedAfter: latest.media?.paused ?? null, visibilityAfter: visibility });
     } catch {
       if (status === 'running' && mediaHealth === health) stop('页面读取或操作异常，已暂停并退出学习页，请人工确认。', true);
     }
@@ -1915,6 +1970,10 @@ function createController(options) {
       logPlayback('failure-count', { counter: 'resume', previous, reason: 'current-time-advanced' });
     }
     clearCourseRetries('current-time-advanced');
+    if (gesturePlayback) {
+      gesturePlayback = null;
+      message = '正在按平台课节状态连续学习。';
+    }
     health.nextAt = 0;
     health.pauseSince = null;
     health.userPaused = false;
@@ -1934,8 +1993,16 @@ function createController(options) {
   );
   const observeMediaSignal = (page, signal, tracked, recordEvent = true) => {
     if (!signal || !page.media || page.player?.id !== signal.id || signal.event === 'timeupdate') return;
-    if (recordEvent) logPlayback(signal.event === 'control-input' ? 'control-input' : 'media-event',
-      { mediaEvent: signal.event, source: signal.source, trusted: signal.trusted, action: signal.action });
+    if (recordEvent && playbackLog.enabled) {
+      const details = { mediaEvent: signal.event, source: signal.source, trusted: signal.trusted, action: signal.action,
+        initiator: null, gesture: null, userActivation: null,
+        ...signal.playback, pausedAfter: signal.pausedAfter, visibilityAfter: signal.visibilityAfter };
+      if (signal.event === 'pause') {
+        details.precedingPlay = signal.precedingPlay;
+        details.pauseCause = ({ assistant: 'assistant-command', user: 'player-control' })[signal.source] || 'unattributed';
+      }
+      logPlayback(signal.event === 'control-input' ? 'control-input' : 'media-event', details);
+    }
     if (!tracked || !samePlayer(page, tracked)) return;
     if (signal.event === 'pause' && page.media.paused) {
       tracked.pauseSource = signal.source;
@@ -1987,10 +2054,65 @@ function createController(options) {
     message = '播放器已恢复播放。助手队列仍暂停。';
     emit();
   };
-  const checkPlayback = (page, current, active, health) => {
+  const beginPlayback = (page, current, health, initiator, gesture = false) => {
+    const resume = health.started;
+    const attempt = { sectionId: health.sectionId, since: milliseconds(), resume, result: 'pending', initiator, gesture };
+    health.baseline = Number.isFinite(page.media.currentTime) ? page.media.currentTime : null;
+    health.request = attempt;
+    if (gesturePlayback) gesturePlayback.ready = null;
+    if (gesture) message = '正在确认当前课节播放。';
+    else if (resume && visibility === 'visible') message = `播放已暂停，正在自动恢复播放（${health.failures + 1}/3）。`;
+    logPlayback('play-attempt', { mode: resume ? 'resume' : 'start', muteRequested: record.automation.mute,
+      source: 'assistant', initiator, gesture });
+    const expected = { route: page.route, sectionId: health.sectionId, playerId: health.playerId, initiator, gesture,
+      onCall: fields => logPlayback('play-call', fields), onNativeError: name => { attempt.nativeError = name; } };
+    // The adapter calls the native method before it awaits its Promise.
+    Promise.resolve(adapter.playCurrentMedia(record.automation.mute, expected)).then(
+      success => settleMediaRequest(health, attempt, current, success ? 'accepted' : 'refused'),
+      () => settleMediaRequest(health, attempt, current, 'rejected'),
+    );
+  };
+  const offerGesture = (page, health) => {
+    if (visibility !== 'visible') return;
+    gesturePlayback.ready = { playerId: health.playerId, sectionId: health.sectionId, route: page.route };
+    if (gesturePlayback.announcedPlayer !== health.playerId || !gesturePlayback.announced) {
+      gesturePlayback.announced = true;
+      gesturePlayback.announcedPlayer = health.playerId;
+      logPlayback('gesture-ready', { initiator: gesturePlayback.initiator });
+    }
+    message = '请点击「播放当前课节」，也可以直接操作播放器。';
+  };
+  const playFromGesture = event => {
+    const offered = gesturePlayback?.ready;
+    if (!offered || status !== 'running' || destroyed || recovery || !held || !mediaHealth || mediaHealth.request) return false;
+    refreshVisibility();
+    if (event?.isTrusted !== true || adapter.userActivation?.() === false || visibility !== 'visible') {
+      logPlayback('gesture-ignored', { initiator: gesturePlayback.initiator, trusted: event?.isTrusted === true,
+        userActivation: adapter.userActivation?.() ?? null });
+      return false;
+    }
+    if (!isWithinWindow(now(), record.window)) { waitWindow(); return false; }
+    if (!verify()) return false;
+    const current = queue().find(course => course.id === task.current);
+    if (!current) return false;
+    const page = adapter.read();
+    if (pauseForRelearn(page, current)) return false;
+    if (page.route !== offered.route || !canObservePlayback(page, current) || !samePlayer(page, offered)
+      || !samePlayer(page, mediaHealth) || page.mediaReady === false || page.online === false || page.media.ended) {
+      gesturePlayback.ready = null;
+      logPlayback('gesture-target-changed', { initiator: gesturePlayback.initiator });
+      emit();
+      return false;
+    }
+    observePlayback(page);
+    if (!page.media.paused) { observeProgress(page, mediaHealth); emit(); return false; }
+    beginPlayback(page, current, mediaHealth, gesturePlayback.initiator, true);
+    emit();
+    return true;
+  };
+  const checkPlayback = (page, current, health) => {
     const media = page.media;
     const at = milliseconds();
-    const time = Number.isFinite(media.currentTime) ? media.currentTime : null;
     if (media.paused && !health.wasPaused) {
       health.pauseSince = at;
       logPlayback('pause-detected', { mode: health.started ? 'resume' : 'start', source: health.pauseSource || 'unattributed' });
@@ -2009,6 +2131,13 @@ function createController(options) {
       if (visibility !== 'visible') return;
       const timeout = request.result === 'pending' || !media.paused ? wdControllerPlayTimeout : wdControllerProgressTimeout;
       if (at - Math.max(request.since, visibleSince, request.unpausedSince ?? -Infinity) < timeout) return;
+      if (request.nativeError === 'NotAllowedError' && media.paused) {
+        endMediaRequest('blocked', 'user-gesture-required');
+        gesturePlayback ??= { initiator: 'panel-continue' };
+        logPlayback('gesture-required', { initiator: request.initiator, nativeError: request.nativeError });
+        offerGesture(page, health);
+        return;
+      }
       const reason = ({ pending: 'request-timeout', refused: 'play-refused', rejected: 'play-rejected' })[request.result] || 'no-progress';
       endMediaRequest('failed', reason);
       if (request.resume) {
@@ -2022,9 +2151,8 @@ function createController(options) {
         return;
       }
       if (!request.resume) {
-        const timedOut = request.result === 'pending';
         const summary = ({ pending: '播放请求超时。', refused: '浏览器未能自动播放。', rejected: '播放失败。' })[request.result] || '播放未能推进。';
-        recover(summary, { reopen: timedOut, cause: reason, playback: page });
+        recover(summary, { reopen: false, cause: reason, playback: page });
         return;
       }
       if (health.failures > wdControllerResumeBackoff.length) {
@@ -2035,24 +2163,18 @@ function createController(options) {
       health.nextAt = at + wdControllerResumeBackoff[health.failures - 1];
       return;
     }
-    if (!media.paused || at < health.nextAt) return;
+    if (!media.paused) {
+      if (gesturePlayback) message = '正在确认当前课节播放。';
+      return;
+    }
+    if (at < health.nextAt) return;
+    if (gesturePlayback) { offerGesture(page, health); return; }
     if (visibility === 'hidden') {
       if (attemptedWhileHidden) return;
       attemptedWhileHidden = true;
     } else if (health.started && at - Math.max(health.pauseSince ?? at, visibleSince) < wdControllerPauseGrace) return;
 
-    const resume = health.started;
-    const attempt = { sectionId: active.id, since: at, resume, result: 'pending' };
-    health.baseline = time;
-    health.request = attempt;
-    if (resume && visibility === 'visible') message = `播放已暂停，正在自动恢复播放（${health.failures + 1}/3）。`;
-    logPlayback('play-attempt', { mode: resume ? 'resume' : 'start', muted: record.automation.mute, source: 'assistant' });
-    const expected = { route: page.route, sectionId: active.id, playerId: health.playerId,
-      onNativeError: name => { attempt.nativeError = name; } };
-    Promise.resolve(adapter.playCurrentMedia(record.automation.mute, expected)).then(
-      success => settleMediaRequest(health, attempt, current, success ? 'accepted' : 'refused'),
-      () => settleMediaRequest(health, attempt, current, 'rejected'),
-    );
+    beginPlayback(page, current, health, health.started ? 'automatic-resume' : 'queue-start');
   };
   const tick = async (signal = null) => {
     refreshVisibility();
@@ -2064,6 +2186,7 @@ function createController(options) {
     try { lease(); } catch (error) { storageError(error); return; }
     if (ticking) return;
     ticking = true;
+    if (gesturePlayback) gesturePlayback.ready = null;
     currentPlayback = null;
     try {
       const page = adapter.read();
@@ -2282,7 +2405,7 @@ function createController(options) {
             confirmWait = null;
             if (message === '媒体播放已结束，正在等待平台确认课节完成。') message = '正在按平台课节状态连续学习。';
           }
-          checkPlayback(page, current, active, mediaHealth);
+          checkPlayback(page, current, mediaHealth);
         } else {
           loading = null;
           if (confirmWait) {
@@ -2304,7 +2427,7 @@ function createController(options) {
     if (event === 'visibility') refreshVisibility();
     const signal = detail ? { event, ...detail } : null;
     const forPlayer = !mediaHealth || mediaHealth.playerId === signal?.id;
-    const needsSample = recovery || mediaHealth?.request || mediaHealth?.pauseSince != null;
+    const needsSample = recovery || gesturePlayback || mediaHealth?.request || mediaHealth?.pauseSince != null;
     const newPlayback = event === 'play' || event === 'playing';
     if (status === 'running' && (event === 'visibility' || newPlayback || (forPlayer && (event !== 'timeupdate' || needsSample)))) {
       void tick(signal);
@@ -2321,7 +2444,7 @@ function createController(options) {
   return {
     getState, subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     search, chooseCandidate, collectDraft, draftSetSelection, selectCourses, addDraft, discardDraft, setSelection, setTaskMode, recheckCompleted, refreshTask, removeTask, clearCompletedTasks, moveTask, setWindow, setAutomation,
-    start, pause, retry, skipCurrent, tick,
+    start, pause, retry, skipCurrent, playFromGesture, tick,
     setPlaybackLogging, getPlaybackLogText: playbackLog.text,
     diagnose() {
       const diagnostic = adapter.diagnose();
@@ -2372,10 +2495,10 @@ function createPanel(win, controller, version) {
   const button = (action, text, parent, handler, edit = true) => {
     const node = element('button', text, parent); node.type = 'button'; node.dataset.action = action;
     if (edit) editors.add(node);
-    node.addEventListener('click', async () => {
+    node.addEventListener('click', async event => {
       if (node.disabled || busy.has(node)) return;
       busy.add(node); node.disabled = true;
-      try { await handler(); } catch { diagnostic.textContent = '操作未完成，请查看当前状态后重试。'; }
+      try { await handler(event); } catch { diagnostic.textContent = '操作未完成，请查看当前状态后重试。'; }
       finally { busy.delete(node); node.disabled = false; render(controller.getState()); }
     });
     return node;
@@ -2383,6 +2506,9 @@ function createPanel(win, controller, version) {
   const isRunning = state => ['running', 'preparing', 'waiting'].includes(state.status) || state.phase === 'resuming';
   const runButton = button('run-toggle', '开始', headerButtons, () => isRunning(controller.getState()) ? controller.pause() : startQueue(), false);
   const toggle = button('toggle', '展开', headerButtons, () => setOpen(body.hidden), false); toggle.setAttribute('aria-expanded', 'false');
+  const playGesture = button('play-current', '播放当前课节', header, event => controller.playFromGesture(event), false);
+  playGesture.className = 'primary';
+  playGesture.style.marginTop = '8px';
   const progress = element('div', '', header); progress.className = 'progress'; progress.setAttribute('role', 'status'); progress.setAttribute('aria-live', 'polite');
   const compact = element('div', '', header); compact.className = 'muted compact-course';
   const compactTime = element('div', '', header); compactTime.className = 'muted playback-time'; compactTime.dataset.playbackTime = '';
@@ -2392,7 +2518,7 @@ function createPanel(win, controller, version) {
   const message = element('div', '', execution);
   const problemBox = element('div', '', body); problemBox.className = 'problem'; problemBox.dataset.problem = '';
   const problemText = element('div', '', problemBox); const problemActions = element('div', '', problemBox); problemActions.className = 'buttons';
-  button('retry', '重试本课程', problemActions, () => controller.retry(latest.problem?.taskId, latest.problem?.courseId));
+  button('retry', '重试本课程', problemActions, () => controller.retry(latest.problem?.taskId, latest.problem?.courseId, 'panel-retry'));
   button('skip', '跳过并继续', problemActions, () => controller.skipCurrent());
   const queueView = element('div', '', body); queueView.dataset.view = 'queue';
   const queueHeading = element('div', '', queueView); queueHeading.className = 'headline'; element('h2', '任务队列', queueHeading);
@@ -2509,10 +2635,17 @@ function createPanel(win, controller, version) {
     if (JSON.stringify(next) !== JSON.stringify(controller.getState().window) && !await controller.setWindow(next)) return false;
     dirty.clear(); return true;
   };
+  const hasRunHistory = state => Boolean(state.currentCourseId) || state.tasks.some(item => item.current || item.done.length || item.skipped.length || item.deferred?.length);
   const startQueue = async () => {
     if (starting) return;
     starting = true; render(controller.getState());
-    try { if (await saveWindow()) await controller.start(); }
+    const continuing = hasRunHistory(controller.getState());
+    try {
+      if (await saveWindow()) {
+        if (continuing) await controller.start(null, 'panel-continue');
+        else await controller.start();
+      }
+    }
     finally { starting = false; render(controller.getState()); }
   };
   const canSort = () => !reordering && !starting && !latest.unavailable && latest.status !== 'preparing' && latest.phase !== 'resuming';
@@ -2573,7 +2706,7 @@ function createPanel(win, controller, version) {
           catch { diagnostic.textContent = '勾选未能保存，请重试。'; }
           finally { busy.delete(input); render(controller.getState()); }
         });
-        const retry = item ? button(`retry-${item.id}-${course.id}`, '重试', label, () => controller.retry(item.id, course.id)) : null;
+        const retry = item ? button(`retry-${item.id}-${course.id}`, '重试', label, () => controller.retry(item.id, course.id, 'panel-retry')) : null;
         row = { label, input, caption, meta, section, retry, time, playback }; view.nodes.set(course.id, row);
       }
       const recheck = item?.recheck?.includes(course.id);
@@ -2706,13 +2839,15 @@ function createPanel(win, controller, version) {
     for (const control of problemActions.querySelectorAll('button')) control.disabled ||= adding;
     const hasPending = state.tasks.some(item => item.subject && eligible(item).some(course => !isDone(item, course.id) && !item.skipped.includes(course.id) && !item.deferred?.some(entry => entry.courseId === course.id)));
     const cannotStart = starting || state.unavailable || adding || Boolean(state.draft) || !hasPending;
-    const hasStarted = Boolean(state.currentCourseId) || state.tasks.some(item => item.current || item.done.length || item.skipped.length || item.deferred?.length);
+    const hasStarted = hasRunHistory(state);
     startButton.disabled = running || cannotStart;
     const completedCount = state.tasks.filter(item => completeTask(item) && !(running && item.id === state.activeTaskId)).length;
     clearCompleted.textContent = `清除已完成${completedCount ? `（${completedCount}）` : ''}`;
     clearCompleted.disabled = !completedCount || state.unavailable || state.status === 'preparing' || state.phase === 'resuming';
     runButton.textContent = running ? '暂停' : state.status === 'complete' ? '已完成' : hasStarted ? '继续' : '开始';
     runButton.disabled = starting || (!running && cannotStart); toggle.disabled = false;
+    playGesture.hidden = !state.playGesture;
+    playGesture.disabled = !state.playGesture;
     for (const control of busy) control.disabled = true;
   }
   const unsubscribe = controller.subscribe(render);
@@ -2725,7 +2860,7 @@ function createPanel(win, controller, version) {
 
 
 
-const wdMainVersion = "0.1.0-beta.18";
+const wdMainVersion = "0.1.0-beta.19";
 
 function wdMainBootstrap(win) {
   if (win.location.protocol !== 'https:' || win.location.hostname !== 'wangda.chinamobile.com' || win.top !== win.self) return;

@@ -654,6 +654,25 @@ test('多播放器无唯一归属时拒绝同时操作并明确报错，唯一�
   } finally { w.close(); }
 });
 
+test('唯一可见但明确属于别的课节的音频无法成为当前播放目标', async () => {
+  const { window } = dom(chapters(section('video', { active: true, type: 5, status: '学习中' }))
+    + '<audio data-section-id="old"></audio><video data-section-id="video" hidden></video>', courseRoute);
+  try {
+    const adapter = createAdapter(window);
+    const [audio, video] = window.document.querySelectorAll('audio,video');
+    let plays = 0;
+    audio.play = () => { assert.fail('旧课节音频不应播放'); };
+    video.play = async () => { plays += 1; };
+    assert.equal(adapter.read().mediaTarget.reason, 'binding-mismatch');
+    assert.equal(await adapter.playCurrentMedia(false), false);
+    video.hidden = false;
+    assert.equal(adapter.read().mediaTarget.tag, 'video');
+    assert.equal(adapter.read().mediaTarget.reason, 'section-bound');
+    assert.equal(await adapter.playCurrentMedia(false), true);
+    assert.equal(plays, 1);
+  } finally { window.close(); }
+});
+
 test('识别失败区分零结果、页面未就绪与不支持的结构并输出可核对依据且不泄露敏感信息', () => {
   const cases = [
     [subjectRoute, '<div class="subject-detail-page"><div class="empty">暂无课程</div></div>', 'zero-results', /\.content\.new/u],

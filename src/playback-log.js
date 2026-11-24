@@ -20,7 +20,8 @@ export function createPlaybackLog(now) {
       at: now().toISOString(), event, visibility, runnerStatus, page: pageKind, route: routeNumber || null,
       player: media?.id ?? null, paused: media?.paused ?? null, ended: media?.ended ?? null,
       currentTime: wdPlaybackNumber(media?.currentTime), readyState: media?.readyState ?? null,
-      control: media?.control ?? null, courseRetries, resumeFailures, ...details,
+      control: media?.control ?? null, muted: media?.muted ?? null, mediaTag: media?.tag ?? null,
+      mediaTarget: media?.target ?? null, visiblePlayers: media?.count ?? null, courseRetries, resumeFailures, ...details,
     };
     next = (next + 1) % wdPlaybackLogLimit;
     total += 1;
@@ -32,7 +33,9 @@ export function createPlaybackLog(now) {
     observe(page, context) {
       if (!enabled) return;
       if (page.route === route && !Object.hasOwn(page, 'media')) return;
-      media = page.media ? { ...page.media, id: page.player?.id, readyState: page.player?.readyState, control: page.player?.control } : null;
+      media = page.media || page.mediaTarget ? { ...page.media, id: page.player?.id, readyState: page.player?.readyState,
+        control: page.player?.control, muted: page.player?.muted, tag: page.mediaTarget?.tag,
+        target: page.mediaTarget?.reason, count: page.mediaTarget?.count } : null;
       if (page.route === route) return;
       route = page.route;
       pageKind = page.kind;

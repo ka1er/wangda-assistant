@@ -419,6 +419,70 @@ test('后台第三次退避中播放器已经恢复，确认进度便取消退�
   }
 });
 
+test('面板继续等到播放器就绪，真实手势在当前调用中播放并核对旧目标已失效', async () => {
+  let activation = false;
+  const f = await ready(fixture());
+  f.adapter.userActivation = () => activation;
+  const commands = [];
+  f.adapter.playCurrentMedia = (mute, options) => { commands.push({ mute, ...options }); return Promise.resolve(true); };
+  f.page(course([section()], {
+    player: { id: 1, readyState: 4, seekRevision: 0 },
+    media: { paused: true, ended: false, currentTime: 8 },
+  }));
+  f.c.setPlaybackLogging(true);
+  assert.equal(await f.c.start(null, 'panel-continue'), true);
+  await elapse(f, 40000);
+  assert.equal(f.c.getState().playGesture, true);
+  assert.deepEqual(commands, []);
+  assert.equal(f.c.playFromGesture({ isTrusted: true }), false);
+  activation = true;
+  assert.equal(f.c.playFromGesture({ isTrusted: false }), false);
+  f.page({ player: { id: 2, readyState: 4, seekRevision: 0 } });
+  assert.equal(f.c.playFromGesture({ isTrusted: true }), false);
+  assert.deepEqual(commands, []);
+  await f.c.tick();
+  assert.equal(f.c.playFromGesture({ isTrusted: true }), true);
+  assert.equal(commands[0].playerId, 2);
+  assert.equal(commands[0].initiator, 'panel-continue');
+  assert.equal(commands[0].gesture, true);
+  assert.equal(f.c.getState().playGesture, false);
+  f.page({ media: { paused: false, ended: false, currentTime: 9 } });
+  await f.c.tick();
+  assert.doesNotMatch(f.c.getState().message, /正在确认/u);
+  assert.doesNotMatch(f.c.getPlaybackLogText(), /"event":"failure-count"/u);
+  f.c.destroy();
+});
+
+test('自动播放遭到手势限制会等待可信点击，期间不重试也不加失败计数', async () => {
+  const f = await ready(fixture());
+  const attempts = [];
+  f.adapter.playCurrentMedia = (_, options) => {
+    attempts.push(options);
+    if (!options.gesture) { options.onNativeError('NotAllowedError'); return Promise.resolve(false); }
+    return Promise.resolve(true);
+  };
+  await f.c.setAutomation({ enabled: true, resumeOnReload: false });
+  f.page(course([section()], { media: { paused: true, ended: false, currentTime: 3 } }));
+  f.c.setPlaybackLogging(true);
+  await f.c.start();
+  await f.c.tick();
+  assert.equal(attempts.length, 1);
+  assert.equal(attempts[0].initiator, 'queue-start');
+  await elapse(f, 8000);
+  await elapse(f, 60000);
+  assert.equal(attempts.length, 1);
+  assert.equal(f.c.getState().playGesture, true);
+  assert.equal(f.c.playFromGesture({ isTrusted: true }), true);
+  assert.equal(attempts.length, 2);
+  assert.equal(attempts[1].initiator, 'panel-continue');
+  f.page({ media: { paused: false, ended: false, currentTime: 4 } });
+  await f.c.tick();
+  assert.doesNotMatch(f.c.getPlaybackLogText(), /"event":"failure-count"/u);
+  assert.match(f.c.getPlaybackLogText(), /"event":"gesture-required"/u);
+  assert.equal(f.c.getState().status, 'running');
+  f.c.destroy();
+});
+
 test('播放器控件暂停期间助手不抢播，面板暂停后手动播放不重开队列', async () => {
   let listen;
   const f = await ready(fixture({}, { watchPlayback: listener => { listen = listener; } }));
@@ -603,12 +667,12 @@ test('恢复后平台直接切到图文课节，不残留正在恢复播放提�
 test('播放Promise等待时用户暂停，晚到回调无动作', async () => {
   let finish; const f = await ready(fixture({}, { play: () => new Promise(resolve => { finish = resolve; }) })); f.page(course([section()], { media: { ended: false, paused: true } })); await f.c.start(); await f.c.tick(); await f.c.pause(); const before = [...f.actions]; finish(false); await Promise.resolve(); await f.c.tick(); assert.deepEqual(f.actions, before);
 });
-test('持续暂停的播放请求30秒未settle必须退出，晚到成功或失败均无动作', async () => {
+test('持续暂停的播放请求30秒未settle保留原页，晚到结果无动作', async () => {
   for (const result of [true, false]) {
     let finish; const f = await ready(fixture({}, { play: () => new Promise(resolve => { finish = resolve; }) }));
     f.page(course([section()], { media: { ended: false, paused: true } })); await f.c.start(); await f.c.tick();
     await elapse(f, 29000); assert.equal(f.c.getState().status, 'running'); assert.ok(!f.actions.includes('leave'));
-    await elapse(f, 1000); assert.equal(f.c.getState().status, 'paused'); assert.match(f.c.getState().message, /播放.*超时/u); assert.ok(f.actions.includes('pause')); assert.ok(f.actions.includes('leave'));
+    await elapse(f, 1000); assert.equal(f.c.getState().status, 'paused'); assert.match(f.c.getState().message, /播放.*超时/u); assert.ok(!f.actions.includes('pause')); assert.ok(!f.actions.includes('leave'));
     const stopped = [...f.actions]; finish(result); for (let i = 0; i < 5; i += 1) await Promise.resolve(); await f.c.tick(); assert.deepEqual(f.actions, stopped); assert.equal(f.c.getState().status, 'paused');
   }
 });

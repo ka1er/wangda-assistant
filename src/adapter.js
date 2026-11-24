@@ -252,14 +252,13 @@ function wdAdapterVisible(element) {
   return element.isConnected;
 }
 
-function wdAdapterMediaHasBinding(media, attrName, expected) {
-  if (!media || !expected) return false;
+function wdAdapterMediaBinding(media, attrName) {
   const docBody = media.ownerDocument?.body;
   for (let current = media; current && current !== docBody; current = current.parentElement) {
     const value = wdAdapterAttribute(current, attrName);
-    if (value !== null && value === expected) return true;
+    if (value) return value;
   }
-  return false;
+  return null;
 }
 
 const wdAdapterMediaStates = new WeakMap();
@@ -301,24 +300,29 @@ function wdAdapterPlayerControls(media) {
 function wdAdapterResolveMedia(document, page) {
   const all = [...document.querySelectorAll('video,audio')];
   const visible = all.filter(wdAdapterVisible);
-  if (!visible.length) return { status: 'none', target: null, count: 0, totalCount: all.length, tag: null, reason: all.length ? 'only-hidden-media' : 'no-media' };
-  if (visible.length === 1) return { status: 'resolved', target: visible[0], count: 1, totalCount: all.length, tag: visible[0].tagName.toLowerCase(), reason: 'single-visible' };
-  if (page?.kind === 'course') {
-    const activeId = page.activeSectionId;
-    const activeEl = activeId ? wdAdapterSectionElements(document).find(element => wdAdapterSectionId(element) === activeId && wdAdapterAttribute(element, 'course-id') === page.courseId) : null;
-    const activeResourceId = activeEl ? wdAdapterAttribute(activeEl, 'resource-id') : null;
-    if (activeId || activeResourceId) {
-      const sectionBound = visible.filter(media => wdAdapterMediaHasBinding(media, 'section-id', activeId) || wdAdapterMediaHasBinding(media, 'resource-id', activeResourceId));
-      if (sectionBound.length === 1) {
-        return { status: 'resolved', target: sectionBound[0], count: visible.length, totalCount: all.length, tag: sectionBound[0].tagName.toLowerCase(), reason: 'section-bound' };
-      }
-    }
-    if (page.courseId) {
-      const courseBound = visible.filter(media => wdAdapterMediaHasBinding(media, 'course-id', page.courseId));
-      if (courseBound.length === 1) {
-        return { status: 'resolved', target: courseBound[0], count: visible.length, totalCount: all.length, tag: courseBound[0].tagName.toLowerCase(), reason: 'course-bound' };
-      }
-    }
+  const none = reason => ({ status: 'none', target: null, count: visible.length, totalCount: all.length, tag: null, reason });
+  const resolved = (target, reason) => ({ status: 'resolved', target, count: visible.length, totalCount: all.length, tag: target.tagName.toLowerCase(), reason });
+  if (!visible.length) return none(all.length ? 'only-hidden-media' : 'no-media');
+
+  const activeId = page.kind === 'course' ? page.activeSectionId : null;
+  const activeEl = activeId && wdAdapterSectionElements(document).find(element => wdAdapterSectionId(element) === activeId
+    && wdAdapterAttribute(element, 'course-id') === page.courseId);
+  const resourceId = activeEl ? wdAdapterAttribute(activeEl, 'resource-id') : null;
+  const bindings = visible.map(target => ({
+    target, section: wdAdapterMediaBinding(target, 'section-id'),
+    resource: wdAdapterMediaBinding(target, 'resource-id'), course: wdAdapterMediaBinding(target, 'course-id'),
+  }));
+  const conflicts = (actual, expected) => Boolean(actual && expected && actual !== expected);
+  const eligible = bindings.filter(item => !conflicts(item.section, activeId) && !conflicts(item.resource, resourceId)
+    && !conflicts(item.course, page.courseId));
+  if (!eligible.length) return none('binding-mismatch');
+
+  const sectionBound = eligible.filter(item => (activeId && item.section === activeId) || (resourceId && item.resource === resourceId));
+  if (sectionBound.length === 1) return resolved(sectionBound[0].target, 'section-bound');
+  if (!sectionBound.length) {
+    if (eligible.length === 1) return resolved(eligible[0].target, visible.length === 1 ? 'single-visible' : 'unique-compatible');
+    const courseBound = eligible.filter(item => page.courseId && item.course === page.courseId);
+    if (courseBound.length === 1) return resolved(courseBound[0].target, 'course-bound');
   }
   return { status: 'ambiguous', target: null, count: visible.length, totalCount: all.length, tag: null, reason: 'multiple-visible-media' };
 }
@@ -620,7 +624,7 @@ export function readPage(document, hash) {
       const player = wdAdapterMediaState(media);
       const controls = new Set(wdAdapterPlayerControls(media).values());
       page.player = { id: player.id, seekRevision: player.seekRevision, seeking: media.seeking, readyState: media.readyState,
-        control: controls.size > 1 ? 'mixed' : controls.values().next().value ?? null };
+        muted: Boolean(media.muted), control: controls.size > 1 ? 'mixed' : controls.values().next().value ?? null };
       // A source lets play() start loading even when the platform uses preload="none".
       page.mediaReady = !media.paused || media.ended || media.readyState >= media.HAVE_METADATA
         || Boolean(media.currentSrc || media.srcObject || media.getAttribute('src')?.trim()
@@ -792,10 +796,12 @@ export function createAdapter(win) {
     win.location.hash = route;
     return true;
   };
-  const markMediaCommand = (media, type, call) => {
+  const visibility = () => win.document.visibilityState === 'visible' ? 'visible' : 'hidden';
+  const userActivation = () => win.navigator.userActivation?.isActive ?? null;
+  const markMediaCommand = (media, type, call, playback = null) => {
     const paused = media.paused;
     const result = call();
-    if (media.paused !== paused) wdAdapterMediaState(media).command = { type, at: win.performance.now() };
+    if (media.paused !== paused) wdAdapterMediaState(media).command = { type, at: win.performance.now(), playback };
     return result;
   };
   const pauseMedia = () => {
@@ -807,10 +813,10 @@ export function createAdapter(win) {
   };
   return {
     read,
-    visibility: () => win.document.visibilityState === 'visible' ? 'visible' : 'hidden',
+    visibility, userActivation,
     watchPlayback(listener) {
       const doc = win.document;
-      const visibility = () => listener('visibility');
+      const visibilityChange = () => listener('visibility');
       const route = event => listener('route', wdAdapterRoute(new URL(event.newURL || win.location.href).hash));
       const controlInput = event => {
         if (!event.isTrusted || wdAdapterRoute(win.location.hash).kind !== 'course') return;
@@ -821,8 +827,10 @@ export function createAdapter(win) {
         const type = wdAdapterPlayerControls(target).get(control);
         if (!type || target.paused !== (type === 'play')) return;
         const player = wdAdapterMediaState(target);
-        player.controlInput = { type, at: win.performance.now() };
-        listener('control-input', { id: player.id, source: 'user', action: type, trusted: true });
+        const playback = { initiator: 'player-control', gesture: true, userActivation: userActivation(),
+          pausedBefore: target.paused, visibilityBefore: visibility(), mutedBefore: target.muted };
+        player.controlInput = { type, at: win.performance.now(), playback };
+        listener('control-input', { id: player.id, source: 'user', action: type, trusted: true, playback });
       };
       const media = event => {
         if (!event.target?.matches?.('video,audio')) return;
@@ -838,23 +846,36 @@ export function createAdapter(win) {
           return;
         }
         let source = event.isTrusted ? 'platform-or-browser' : 'unattributed';
-        if (type === 'playing') source = player.playSource || source;
-        else {
-          if (player.command?.type === type && at - player.command.at < 2000) source = 'assistant';
-          else if (event.isTrusted && player.controlInput?.type === type && at - player.controlInput.at < 2000) source = 'user';
+        let playback = null;
+        const precedingPlay = player.playback?.initiator ?? null;
+        if (type === 'playing') {
+          source = player.playSource || source;
+          playback = player.playback;
+        } else {
+          if (player.command?.type === type && at - player.command.at < 2000) {
+            source = 'assistant';
+            playback = player.command.playback;
+          } else if (event.isTrusted && player.controlInput?.type === type && at - player.controlInput.at < 2000) {
+            source = 'user';
+            playback = player.controlInput.playback;
+          }
           player.command = player.controlInput = null;
           player.playSource = type === 'play' ? source : null;
-          if (type === 'play') player.lastSampleAt = null;
+          if (type === 'play') {
+            player.playback = playback;
+            player.lastSampleAt = null;
+          }
         }
-        listener(type, { id: player.id, source, trusted: event.isTrusted });
+        listener(type, { id: player.id, source, trusted: event.isTrusted, playback,
+          pausedAfter: target.paused, visibilityAfter: visibility(), precedingPlay });
       };
       const mediaEvents = ['play', 'playing', 'pause', 'timeupdate', 'seeking'];
-      doc.addEventListener('visibilitychange', visibility);
+      doc.addEventListener('visibilitychange', visibilityChange);
       win.addEventListener('hashchange', route);
       doc.addEventListener('click', controlInput, true);
       for (const type of mediaEvents) doc.addEventListener(type, media, true);
       return () => {
-        doc.removeEventListener('visibilitychange', visibility);
+        doc.removeEventListener('visibilitychange', visibilityChange);
         win.removeEventListener('hashchange', route);
         doc.removeEventListener('click', controlInput, true);
         for (const type of mediaEvents) doc.removeEventListener(type, media, true);
@@ -934,7 +955,23 @@ export function createAdapter(win) {
       if (resolved.status !== 'resolved') return false;
       const media = resolved.target;
       if (!media.paused || media.ended) return false;
-      try { if (mute) media.muted = true; await markMediaCommand(media, 'play', () => media.play()); return true; }
+      if (expected?.gesture && userActivation() === false) {
+        expected.onNativeError?.('NotAllowedError');
+        return false;
+      }
+      const playback = { initiator: expected?.initiator ?? 'queue-start', gesture: expected?.gesture === true,
+        userActivation: userActivation(), pausedBefore: media.paused, visibilityBefore: visibility(), mutedBefore: media.muted };
+      try {
+        let pendingPlay;
+        try {
+          if (mute) media.muted = true;
+          pendingPlay = markMediaCommand(media, 'play', () => media.play(), playback);
+        } finally {
+          expected?.onCall?.({ ...playback, pausedAfter: media.paused, visibilityAfter: visibility(), mutedAfter: media.muted });
+        }
+        await pendingPlay;
+        return true;
+      }
       catch (error) {
         const name = error?.name;
         expected?.onNativeError?.(['NotAllowedError', 'NotSupportedError', 'AbortError', 'SecurityError'].includes(name) ? name : 'OtherError');

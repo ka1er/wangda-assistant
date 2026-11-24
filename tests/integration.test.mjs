@@ -249,6 +249,12 @@ test('继续进入课程后等待课节和媒体源，首次播放失败也在�
     assert.equal(media.readyState, media.HAVE_NOTHING);
     assert.equal(f.a.read().mediaReady, true);
     await f.elapse(1000);
+    const playCurrent = f.root.querySelector('[data-action="play-current"]');
+    assert.equal(playCurrent.hidden, false);
+    assert.equal(plays, 0);
+    await f.click('play-current');
+    assert.equal(plays, 0);
+    assert.equal(f.c.playFromGesture({ isTrusted: true }), true);
     assert.equal(plays, 1);
     assert.equal(f.c.getState().phase, 'running');
     await f.elapse(8000);
@@ -256,7 +262,11 @@ test('继续进入课程后等待课节和媒体源，首次播放失败也在�
     assert.match(f.c.getState().message, /1\/3/u);
     assert.equal(f.w.location.hash, courseRoute);
     await f.elapse(5000);
+    assert.equal(plays, 1);
+    assert.equal(playCurrent.hidden, false);
+    assert.equal(f.c.playFromGesture({ isTrusted: true }), true);
     assert.equal(plays, 2);
+    media.currentTime = 1;
     await f.elapse(1000);
     assert.equal(f.c.getState().phase, 'running');
     assert.equal(f.c.getState().currentPlayback.paused, false);
@@ -308,7 +318,7 @@ test('播放器持续拒绝时只原地重试三次，暂存原因并保留课�
     Object.defineProperty(media, 'paused', { get: () => paused });
     media.pause = () => { paused = true; };
     let plays = 0;
-    media.play = async () => { plays++; throw new f.w.DOMException('fixture: autoplay blocked', 'NotAllowedError'); };
+    media.play = async () => { plays++; throw new f.w.DOMException('fixture: player interrupted', 'AbortError'); };
     const navigation = [];
     for (const name of ['openCourse', 'leaveLearning']) {
       const original = f.a[name];
