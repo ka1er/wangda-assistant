@@ -95,11 +95,11 @@ export function createController(options) {
   let needOpen = false;
   let ticking = false;
   let mediaHealth = null;
+  let playbackAttention = null;
   let stopMediaWatch = null;
   let recovery = null;
   let restorePending = false;
   let visibility = adapter.visibility?.() || 'visible';
-  let visibilityEpoch = 0;
   let visibleSince = -Infinity;
   let attemptedWhileHidden = false;
   let lastDiagnosticTick = null;
@@ -115,7 +115,7 @@ export function createController(options) {
   const tell = text => { message = text; emit(); return false; };
   const milliseconds = () => now().getTime();
   const retryKey = () => `${task?.id}:${task?.current}`;
-  const logContext = () => ({ visibility, courseRetries: retries.get(retryKey()) || 0, resumeFailures: mediaHealth?.failures || 0 });
+  const logContext = () => ({ visibility, runnerStatus: status, courseRetries: retries.get(retryKey()) || 0, resumeFailures: mediaHealth?.failures || 0 });
   const logPlayback = (event, details) => {
     if (playbackLog.enabled) playbackLog.record(event, logContext(), details);
   };
@@ -127,7 +127,6 @@ export function createController(options) {
     if (next === visibility) return;
     const previous = visibility;
     visibility = next;
-    visibilityEpoch += 1;
     if (next === 'visible') visibleSince = milliseconds();
     else attemptedWhileHidden = false;
     logPlayback('visibility', { previous });
@@ -162,7 +161,17 @@ export function createController(options) {
     if (recovery?.attempt) logPlayback('retry-end', { attempt: recovery.attempt, outcome });
     recovery = null;
   };
+  const clearCourseRetries = reason => {
+    const previous = retries.get(retryKey());
+    if (!previous) return;
+    retries.delete(retryKey());
+    logPlayback('failure-count', { counter: 'course', previous, reason });
+  };
   const notify = text => { try { options.notify?.(`网大助手：${text}`); } catch { /* Notifications are optional. */ } };
+  const pauseOwnedMedia = reason => {
+    logPlayback('pause-command', { source: 'assistant', reason });
+    return adapter.pauseMedia();
+  };
   const readStored = () => {
     if (!storage || typeof storage.get !== 'function' || typeof storage.set !== 'function') throw Error('存储不可用，无法安全保存任务。');
     const value = storage.get(wdControllerTaskKey);
@@ -212,7 +221,7 @@ export function createController(options) {
     preparing = pending = grace = loading = confirmWait = sectionConfirm = null;
     if (wasRunning && !complete && task?.current && /人工|播放|媒体已暂停|课节|超时|页面操作未成功|页面读取或操作异常/u.test(text)) problem = { taskId: task.id, courseId: task.current, reason: text };
     if (wasRunning && !complete && !text.startsWith('已暂停，继续学习') && /人工|手动|播放|课节|超时|登录已失效|平台学习限制|待处理/u.test(text)) {
-      logPlayback('manual-intervention', { trigger: 'runner-stop' });
+      logPlayback('manual-intervention', { trigger: playbackAttention?.trigger || 'runner-stop' });
     }
     endCourseRetry('stopped');
     clearMediaHealth('runner-stop');
@@ -220,7 +229,7 @@ export function createController(options) {
     message = text;
     if (wasRunning && ownsCurrentLearningPage()) {
       try {
-        adapter.pauseMedia();
+        if (!playbackAttention || leave) pauseOwnedMedia('runner-stop');
         if (leave) {
           if (adapter.leaveLearning(task.subject.route) === false) message += ' 页面操作未能完成，请手动停止学习。';
           else lastOwnedPage = null;
@@ -462,6 +471,7 @@ export function createController(options) {
     const token = generation;
     if (!await acquire() || token !== generation || !held || !verify()) return false;
     record.activeTaskId = entry.item.id; task = entry.item; task.current = entry.course.id; problem = null; currentSectionTitle = ''; currentPlayback = null;
+    playbackAttention = null;
     record.runRequested = record.automation.enabled;
     if (!persist()) return false;
     generation += 1; restorePending = false; status = isWithinWindow(now(), record.window) ? 'running' : 'waiting'; needOpen = true;
@@ -480,14 +490,17 @@ export function createController(options) {
   const pause = async () => {
     restorePending = false;
     if (!held && record?.runRequested && !await acquire()) { stop('无法暂停其他标签正在执行的任务，请到执行标签点击暂停。'); return false; }
+    playbackAttention = null;
     if (status !== 'running' && status !== 'preparing' && ownsCurrentLearningPage()) {
       try {
-        adapter.pauseMedia();
+        pauseOwnedMedia('assistant-paused');
         if (adapter.leaveLearning(task.subject.route) === false) { stop('页面未能停止，请手动退出学习页。'); return false; }
         lastOwnedPage = null;
       } catch { stop('页面未能停止，请手动退出学习页。'); return false; }
     }
-    stop('已暂停，继续学习需手动点击开始。', true); return true;
+    stop('已暂停，继续学习需手动点击开始。', true);
+    clearCourseRetries('assistant-paused');
+    return true;
   };
   const waitFor = (key, reason) => {
     if (loading?.key !== key) loading = { key, since: milliseconds() };
@@ -507,7 +520,11 @@ export function createController(options) {
     const entry = nextEntry();
     if (!entry) {
       const count = record.tasks.reduce((n, item) => n + (item.deferred?.length || 0), 0);
-      if (count) { stop(`队列已执行完，仍有 ${count} 门待处理课程${record.tasks.some(item => item.skipped.length) ? '及跳过课程' : ''}；请在详情中查看原因并重试。`, leaveWhenDone); notify(message); return; }
+      if (count) {
+        stop(`队列已执行完，仍有 ${count} 门待处理课程${record.tasks.some(item => item.skipped.length) ? '及跳过课程' : ''}；请在详情中查看原因并重试。`, leaveWhenDone);
+        if (!playbackAttention) notify(message);
+        return;
+      }
       if (record.tasks.some(item => item.skipped.length)) { stop('其他课程已核对，仍有跳过课程未完成，请重试。', true); return; }
       stop('所选课程已全部完成。', true, true); notify('所选课程已完成。'); return;
     }
@@ -519,7 +536,12 @@ export function createController(options) {
     if (matchesCourse(page, entry.course)) { pending = null; return; }
     action(() => adapter.openCourse(entry.course), { kind: 'course', id: entry.course.id, before: page.route });
   };
-  const deferCurrent = (reason, leave = true, trigger = 'platform-or-course') => {
+  const rememberPlaybackAttention = (page, trigger, deferredReason = null) => {
+    playbackAttention = { taskId: task.id, courseId: task.current, route: page.route,
+      sectionId: page.activeSectionId, playerId: page.player?.id, baseline: page.media.currentTime ?? null,
+      seekRevision: page.player?.seekRevision, trigger, deferredReason };
+  };
+  const deferCurrent = (reason, leave = true, trigger = 'platform-or-course', playback = null) => {
     if (!verify() || status !== 'running') return;
     logPlayback('manual-intervention', { trigger, disposition: 'deferred' });
     generation += 1;
@@ -527,33 +549,39 @@ export function createController(options) {
     clearMediaHealth('course-deferred');
     pending = grace = loading = confirmWait = sectionConfirm = null;
     const page = adapter.read();
-    if (ownsCurrentLearningPage()) {
-      adapter.pauseMedia();
+    const owned = ownsCurrentLearningPage();
+    if (owned) {
+      if (!playback || leave) pauseOwnedMedia('course-deferred');
       if (leave && adapter.leaveLearning(task.subject.route) === false) { stop('未能退出当前学习页，请手动退出后继续。'); notify(message); return; }
       lastOwnedPage = null;
     }
     task.deferred = [...(task.deferred || []).filter(item => item.courseId !== task.current), { courseId: task.current, reason }];
     if (!persist()) return;
+    if (playback && !leave && owned) {
+      if (nextEntry()) pauseOwnedMedia('course-deferred');
+      else rememberPlaybackAttention(playback, trigger, reason);
+    }
     message = `课程已放入待处理：${reason} 继续后续课程。`; emit();
     nextCourse(page, leave);
   };
-  const recover = (reason, { reopen = true, cause } = {}) => {
+  const recover = (reason, { reopen = true, cause, playback } = {}) => {
     currentPlayback = null;
     if (!record?.automation.enabled) {
+      if (playback && !reopen) rememberPlaybackAttention(playback, cause);
       stop(`${reason} ${reopen ? '已暂停并退出学习页，请人工确认。' : '请在当前页手动播放后再继续。'}`, reopen);
-      if (!reopen) notify(message);
       return;
     }
     if (!verify() || status !== 'running') return;
     const key = retryKey(), previous = retries.get(key) || 0, attempt = previous + 1;
-    if (attempt > 3) { deferCurrent(`${reason} 已重试三次。`, reopen, cause); return; }
+    if (attempt > 3) { deferCurrent(`${reason} 已重试三次。`, reopen, cause, playback); return; }
     generation += 1;
-    clearMediaHealth('course-retry');
+    if (playback && !reopen) endMediaRequest('cancelled', 'course-retry');
+    else clearMediaHealth('course-retry');
     pending = grace = loading = confirmWait = sectionConfirm = null;
     retries.set(key, attempt);
     logPlayback('failure-count', { counter: 'course', previous, reason: cause });
     if (reopen && ownsCurrentLearningPage()) {
-      adapter.pauseMedia();
+      pauseOwnedMedia('course-retry');
       if (adapter.leaveLearning(task.subject.route) === false) { stop('重试前未能退出学习页，请手动退出后继续。'); notify(message); return; }
       lastOwnedPage = null;
     }
@@ -568,7 +596,7 @@ export function createController(options) {
     if (!record.automation.enabled) { stop('已到学习时段边界，已停止媒体并退出学习页。', true); return; }
     if (ownsCurrentLearningPage()) {
       try {
-        adapter.pauseMedia();
+        pauseOwnedMedia('schedule-ended');
         if (adapter.leaveLearning(task.subject.route) === false) throw Error();
         lastOwnedPage = null;
       } catch { stop('学习时段结束，但未能退出学习页，请手动停止。', true); notify(message); return; }
@@ -607,7 +635,7 @@ export function createController(options) {
         const page = adapter.read();
         const owned = page.kind === 'course' && page.courseId === course.id && page.subjectId === item.subject?.id && page.route === course.route;
         if (owned) {
-          adapter.pauseMedia();
+          pauseOwnedMedia('course-skipped');
           if (adapter.leaveLearning(item.subject.route) === false) return tell('课程已跳过，但未能退出学习页，请手动退出后继续。');
         }
       } catch { return tell('课程已跳过，但页面操作未能完成，请手动退出学习页后继续。'); }
@@ -629,76 +657,156 @@ export function createController(options) {
       request.result = result;
       observePlayback(latest);
       logPlayback('play-result', { mode: request.resume ? 'resume' : 'start', result, nativeError: request.nativeError ?? null });
-      // Keep explicit startup refusals on the existing in-place retry path.
-      if (!request.resume && result !== 'accepted' && latest.media?.paused && !latest.media.ended
-        && latest.sections.some(section => section.id === request.sectionId && ['learning', 'not-started'].includes(section.status))
-        && latest.online !== false && visibility === 'visible' && request.visibilityEpoch === visibilityEpoch) {
-        endMediaRequest('failed', result);
-        recover(result === 'rejected' ? '播放失败。' : '浏览器未能自动播放。', { reopen: false, cause: 'play-refused' });
-      }
     } catch {
       if (status === 'running' && mediaHealth === health) stop('页面读取或操作异常，已暂停并退出学习页，请人工确认。', true);
     }
+  };
+  const readProgress = (page, observation) => {
+    const media = page.media;
+    const time = Number.isFinite(media.currentTime) ? media.currentTime : null;
+    const seeking = page.player?.seeking || observation.seekRevision !== page.player?.seekRevision;
+    observation.seekRevision = page.player?.seekRevision;
+    if (observation.baseline === null || seeking || (time !== null && time < observation.baseline)) observation.baseline = time;
+    if (media.paused || media.ended || seeking || time === null) return 0;
+    const delta = time - observation.baseline;
+    if (delta < wdControllerProgressDelta) return 0;
+    observation.baseline = time;
+    return delta;
+  };
+  const observeProgress = (page, health) => {
+    const delta = readProgress(page, health);
+    if (!delta) return false;
+    const source = health.source || 'unattributed';
+    if (health.request || health.pauseSince !== null || recovery || milliseconds() >= health.sampleAt) {
+      logPlayback('progress', { delta: Math.round(delta * 1000) / 1000, source });
+      health.sampleAt = milliseconds() + 10000;
+    }
+    if (health.request) endMediaRequest('progress', 'current-time-advanced');
+    else if (health.pauseSince !== null || recovery) {
+      logPlayback('recovery-result', { mode: 'resume', outcome: 'progress', reason: 'observed-resume', source });
+    }
+    if (health.failures) {
+      const previous = health.failures;
+      health.failures = 0;
+      logPlayback('failure-count', { counter: 'resume', previous, reason: 'current-time-advanced' });
+    }
+    clearCourseRetries('current-time-advanced');
+    health.nextAt = 0;
+    health.pauseSince = null;
+    health.userPaused = false;
+    if (recovery) endCourseRetry('playback-confirmed');
+    if (message.startsWith('播放已暂停，正在自动恢复播放') || message.startsWith('播放器已手动暂停') || message.includes('正在等待重试')) {
+      message = '正在按平台课节状态连续学习。';
+    }
+    return true;
+  };
+  const samePlayer = (page, tracked) => page.activeSectionId === tracked.sectionId && page.player?.id === tracked.playerId;
+  const canObservePlayback = (page, current) => Boolean(
+    matchesCourse(page, current) && !page.relearn?.manualRequired && page.sectionListReady !== false
+    && page.media && page.mediaTarget?.status !== 'ambiguous' && page.mediaTarget?.status !== 'none'
+    && !page.issues?.some(issue => !issue.includes('媒体播放器'))
+    && page.sections.some(section => section.id === page.activeSectionId && section.courseId === current.id
+      && (task.scope === 'all' || section.required) && [5, 6].includes(section.type) && ['learning', 'not-started'].includes(section.status))
+  );
+  const observeMediaSignal = (page, signal, tracked, recordEvent = true) => {
+    if (!signal || !page.media || page.player?.id !== signal.id || signal.event === 'timeupdate') return;
+    if (recordEvent) logPlayback(signal.event === 'control-input' ? 'control-input' : 'media-event',
+      { mediaEvent: signal.event, source: signal.source, trusted: signal.trusted, action: signal.action });
+    if (!tracked || !samePlayer(page, tracked)) return;
+    if (signal.event === 'pause' && page.media.paused) {
+      tracked.pauseSource = signal.source;
+      if (signal.source === 'user' && status === 'running') {
+        tracked.userPaused = true;
+        endMediaRequest('cancelled', 'player-control-paused');
+        message = '播放器已手动暂停，点击播放器继续。';
+      }
+    } else if (['play', 'playing'].includes(signal.event) && !page.media.paused) {
+      tracked.source = signal.source;
+      if (signal.event === 'play' && signal.source === 'user' && tracked.request) tracked.request.since = milliseconds();
+    }
+  };
+  const trackPlayer = (page, key, signal) => {
+    if (mediaHealth?.key === key && samePlayer(page, mediaHealth)) return;
+    clearMediaHealth('player-changed');
+    mediaHealth = { key, sectionId: page.activeSectionId, playerId: page.player?.id, started: false, baseline: null,
+      wasPaused: false, failures: 0, nextAt: 0, sampleAt: 0, request: null };
+    observeMediaSignal(page, signal, mediaHealth, false);
+  };
+  const observePlaybackAttention = async (page, signal) => {
+    const attention = playbackAttention;
+    const current = task?.courses.find(course => course.id === attention?.courseId);
+    if (!attention || attention.confirming || status !== 'paused' || task?.id !== attention.taskId || task.current !== attention.courseId
+      || !current || !canObservePlayback(page, current) || !samePlayer(page, attention)) return;
+    observeMediaSignal(page, signal, attention);
+    const delta = readProgress(page, attention);
+    if (!delta) return;
+    attention.confirming = true;
+    const source = attention.source || 'unattributed';
+    logPlayback('progress', { delta: Math.round(delta * 1000) / 1000, source });
+    if (attention.deferredReason) {
+      const removed = await edit(() => {
+        const latest = adapter.read();
+        if (playbackAttention !== attention || !canObservePlayback(latest, current) || !samePlayer(latest, attention)
+          || latest.media.paused || latest.media.ended) return false;
+        const deferred = task.deferred.filter(item => item.courseId !== attention.courseId || item.reason !== attention.deferredReason);
+        if (deferred.length === task.deferred.length) return false;
+        task.deferred = deferred;
+        return persist();
+      });
+      if (!removed) { logPlayback('attention-clear-blocked', { trigger: attention.trigger }); return; }
+    }
+    if (playbackAttention !== attention || status !== 'paused') return;
+    playbackAttention = null;
+    if (problem?.taskId === attention.taskId && problem.courseId === attention.courseId) problem = null;
+    clearCourseRetries('manual-playback-confirmed');
+    logPlayback('intervention-cleared', { trigger: attention.trigger, source });
+    message = '播放器已恢复播放。助手队列仍暂停。';
+    emit();
   };
   const checkPlayback = (page, current, active, health) => {
     const media = page.media;
     const at = milliseconds();
     const time = Number.isFinite(media.currentTime) ? media.currentTime : null;
-    const seeking = page.player?.seeking || health.seekRevision !== page.player?.seekRevision;
-    health.seekRevision = page.player?.seekRevision;
-    if (health.baseline === null || seeking || (time !== null && time < health.baseline)) health.baseline = time;
     if (media.paused && !health.wasPaused) {
       health.pauseSince = at;
-      logPlayback('pause-detected', { mode: health.started ? 'resume' : 'start' });
+      logPlayback('pause-detected', { mode: health.started ? 'resume' : 'start', source: health.pauseSource || 'unattributed' });
     }
     health.wasPaused = media.paused;
     if (!media.paused) {
       health.started = true;
-      const delta = time !== null && health.baseline !== null ? time - health.baseline : 0;
-      if (!seeking && delta >= wdControllerProgressDelta) {
-        health.baseline = time;
-        if (health.request || health.pauseSince !== null || at >= health.sampleAt) {
-          logPlayback('progress', { delta: Math.round(delta * 1000) / 1000 });
-          health.sampleAt = at + 10000;
-        }
-        if (health.request) endMediaRequest('progress', 'current-time-advanced');
-        else if (health.pauseSince !== null) logPlayback('recovery-result', { mode: 'resume', outcome: 'progress', reason: 'natural-resume' });
-        if (health.failures) {
-          const previous = health.failures;
-          health.failures = 0;
-          logPlayback('failure-count', { counter: 'resume', previous, reason: 'current-time-advanced' });
-        }
-        const previous = retries.get(retryKey());
-        if (previous) {
-          retries.delete(retryKey());
-          logPlayback('failure-count', { counter: 'course', previous, reason: 'current-time-advanced' });
-        }
-        health.nextAt = 0;
-        health.pauseSince = null;
-        if (message.startsWith('播放已暂停，正在自动恢复播放')) message = '正在按平台课节状态连续学习。';
-      } else if (!health.request) health.pauseSince = null;
-    }
+      health.pauseSource = null;
+      if (health.request) health.request.unpausedSince ??= at;
+    } else if (health.request) health.request.unpausedSince = null;
+    observeProgress(page, health);
+    if (health.userPaused) return;
     if (page.online === false) return;
     const request = health.request;
     if (request) {
       if (visibility !== 'visible') return;
       const timeout = request.result === 'pending' || !media.paused ? wdControllerPlayTimeout : wdControllerProgressTimeout;
-      if (at - Math.max(request.since, visibleSince) < timeout) return;
-      const reason = request.result === 'pending' ? 'request-timeout' : 'no-progress';
+      if (at - Math.max(request.since, visibleSince, request.unpausedSince ?? -Infinity) < timeout) return;
+      const reason = ({ pending: 'request-timeout', refused: 'play-refused', rejected: 'play-rejected' })[request.result] || 'no-progress';
       endMediaRequest('failed', reason);
       if (request.resume) {
         const previous = health.failures;
         health.failures += 1;
         logPlayback('failure-count', { counter: 'resume', previous, reason });
       }
-      if (!media.paused) { stop('播放进度持续未推进，请在当前页检查播放器后继续。'); notify(message); return; }
+      if (!media.paused) {
+        rememberPlaybackAttention(page, 'stalled');
+        stop('播放进度持续未推进，请在当前页检查播放器后继续。');
+        return;
+      }
       if (!request.resume) {
         const timedOut = request.result === 'pending';
-        recover(timedOut ? '播放请求超时。' : '播放未能推进。', { reopen: timedOut, cause: reason });
+        const summary = ({ pending: '播放请求超时。', refused: '浏览器未能自动播放。', rejected: '播放失败。' })[request.result] || '播放未能推进。';
+        recover(summary, { reopen: timedOut, cause: reason, playback: page });
         return;
       }
       if (health.failures > wdControllerResumeBackoff.length) {
-        stop('自动恢复播放连续 3 次未能推进，请在当前页检查播放器后继续。'); notify(message); return;
+        rememberPlaybackAttention(page, 'resume-exhausted');
+        stop('自动恢复播放连续 3 次未能推进，请在当前页检查播放器后继续。');
+        return;
       }
       health.nextAt = at + wdControllerResumeBackoff[health.failures - 1];
       return;
@@ -710,11 +818,11 @@ export function createController(options) {
     } else if (health.started && at - Math.max(health.pauseSince ?? at, visibleSince) < wdControllerPauseGrace) return;
 
     const resume = health.started;
-    const attempt = { sectionId: active.id, since: at, resume, visibilityEpoch, result: 'pending' };
+    const attempt = { sectionId: active.id, since: at, resume, result: 'pending' };
     health.baseline = time;
     health.request = attempt;
     if (resume && visibility === 'visible') message = `播放已暂停，正在自动恢复播放（${health.failures + 1}/3）。`;
-    logPlayback('play-attempt', { mode: resume ? 'resume' : 'start', muted: record.automation.mute });
+    logPlayback('play-attempt', { mode: resume ? 'resume' : 'start', muted: record.automation.mute, source: 'assistant' });
     const expected = { route: page.route, sectionId: active.id, playerId: health.playerId,
       onNativeError: name => { attempt.nativeError = name; } };
     Promise.resolve(adapter.playCurrentMedia(record.automation.mute, expected)).then(
@@ -722,7 +830,7 @@ export function createController(options) {
       () => settleMediaRequest(health, attempt, current, 'rejected'),
     );
   };
-  const tick = async () => {
+  const tick = async (signal = null) => {
     refreshVisibility();
     if (restorePending && !destroyed) { restorePending = false; await start({ taskId: record.activeTaskId, courseId: task?.current }); if (status === 'paused' && timer !== null) { unschedule(timer); timer = null; } return; }
     // Boundary and ownership checks also run while a media.play promise is pending.
@@ -743,7 +851,7 @@ export function createController(options) {
         lastDiagnosticTick = checkedAt;
       }
       if (page.kind === 'login' || page.kind === 'study-error') {
-        logPlayback('platform-stop', { trigger: page.kind === 'login' ? 'login' : page.errorCode === '1' ? 'other-window' : 'study-restriction' });
+        logPlayback('platform-stop', { source: 'platform', trigger: page.kind === 'login' ? 'login' : page.errorCode === '1' ? 'other-window' : 'study-restriction' });
         stop(page.kind === 'login' ? '登录已失效，请重新登录后继续。' : page.errorCode === '1' ? '其他学习窗口已接管播放，请关闭其他窗口后手动继续。' : '平台学习限制提示，请在当前页面处理后继续。'); notify(message); return;
       }
       if (status === 'waiting') {
@@ -757,7 +865,7 @@ export function createController(options) {
           clearMediaHealth('offline');
           pending = grace = loading = confirmWait = sectionConfirm = null;
           if (ownsCurrentLearningPage()) {
-            adapter.pauseMedia();
+            pauseOwnedMedia('offline');
             if (adapter.leaveLearning(task.subject.route) === false) { stop('断网后未能退出学习页，请手动退出。'); notify(message); return; }
             lastOwnedPage = null;
           }
@@ -792,6 +900,12 @@ export function createController(options) {
       const current = queue().find(course => course.id === task.current);
       if (!current) { stop('当前课程不在已选清单中。', true); return; }
       if (pauseForRelearn(page, current)) return;
+      observeMediaSignal(page, signal, mediaHealth);
+      if (recovery?.reopen === false && mediaHealth && mediaHealth.sectionId === page.activeSectionId && canObservePlayback(page, current)) {
+        trackPlayer(page, mediaHealth.key, signal);
+        observeProgress(page, mediaHealth);
+        if (mediaHealth.userPaused) return;
+      }
       if (recovery) {
         const onTarget = matchesCourse(page, current);
         const onExpectedSubject = recovery.reopen !== false && page.route === task.subject.route;
@@ -832,7 +946,7 @@ export function createController(options) {
         const nativeNext = task.courses[task.courses.findIndex(course => course.id === current.id) + 1];
         if (isDone(task, current.id) && grace?.key === `course:${current.id}` && next && nativeNext && matchesCourse(page, nativeNext)) {
           // The site advanced within the just-completed course's subject before applying the new queue order.
-          adapter.pauseMedia(); nextCourse(page); return;
+          pauseOwnedMedia('course-changed'); nextCourse(page); return;
         }
         stop('页面已离开目标课程，请确认后重新开始。'); return;
       }
@@ -920,11 +1034,7 @@ export function createController(options) {
           }
           if (!page.media) { confirmWait = null; waitFor(`player:${active.id}`, '未识别本页媒体播放器'); return; }
           const key = `${task.id}:${current.id}:${active.id}`;
-          if (mediaHealth?.key !== key || mediaHealth.playerId !== page.player?.id) {
-            clearMediaHealth('player-changed');
-            mediaHealth = { key, playerId: page.player?.id, started: false, baseline: null, pauseSince: null,
-              wasPaused: false, failures: 0, nextAt: 0, sampleAt: 0, request: null };
-          }
+          trackPlayer(page, key, signal);
           if (page.mediaReady === false && !mediaHealth.started && !mediaHealth.request) {
             confirmWait = null;
             waitFor(`player:${active.id}`, '媒体播放器尚未接入播放源');
@@ -962,8 +1072,26 @@ export function createController(options) {
   };
   try { record = readStored(); identity = record ? { taskId: record.taskId, revision: record.revision } : null; task = record?.tasks.find(item => item.id === record.activeTaskId) || null; } catch (error) { blocked = true; message = error.message?.includes('本地') || error.message?.includes('存储') ? error.message : '本地存储读取失败，无法启动。'; }
   stopPlaybackWatch = adapter.watchPlayback?.((event, detail) => {
-    if (event === 'route') { observePlayback(detail); return; }
-    if (event === 'visibility' || (event === 'pause' && status === 'running' && mediaHealth?.playerId === detail)) void tick();
+    if (event === 'route') {
+      observePlayback(detail);
+      if (playbackAttention && detail.route !== playbackAttention.route) playbackAttention = null;
+      return;
+    }
+    if (event === 'visibility') refreshVisibility();
+    const signal = detail ? { event, ...detail } : null;
+    const forPlayer = !mediaHealth || mediaHealth.playerId === signal?.id;
+    const needsSample = recovery || mediaHealth?.request || mediaHealth?.pauseSince != null;
+    const newPlayback = event === 'play' || event === 'playing';
+    if (status === 'running' && (event === 'visibility' || newPlayback || (forPlayer && (event !== 'timeupdate' || needsSample)))) {
+      void tick(signal);
+    } else if (status === 'paused' && (playbackAttention || playbackLog.enabled) && (event !== 'timeupdate' || playbackAttention?.playerId === signal?.id)) {
+      try {
+        const page = adapter.read();
+        observePlayback(page);
+        if (playbackAttention) void observePlaybackAttention(page, signal).catch(() => logPlayback('attention-clear-blocked'));
+        else observeMediaSignal(page, signal);
+      } catch { /* A player update must never interrupt manual playback. */ }
+    } else if (event === 'visibility' && ['preparing', 'waiting'].includes(status)) void tick();
   }) || null;
   if (!blocked && record?.automation.enabled && record.automation.resumeOnReload && record.runRequested) { restorePending = true; message = '正在准备恢复上次开始的队列。'; watch(); }
   return {

@@ -14,13 +14,13 @@ export function createPlaybackLog(now) {
   let total = 0;
   const entries = new Array(wdPlaybackLogLimit);
 
-  const record = (event, { visibility, courseRetries, resumeFailures }, details = {}) => {
+  const record = (event, { visibility, runnerStatus, courseRetries, resumeFailures }, details = {}) => {
     if (!enabled) return;
     entries[next] = {
-      at: now().toISOString(), event, visibility, page: pageKind, route: routeNumber || null,
-      paused: media?.paused ?? null, ended: media?.ended ?? null,
+      at: now().toISOString(), event, visibility, runnerStatus, page: pageKind, route: routeNumber || null,
+      player: media?.id ?? null, paused: media?.paused ?? null, ended: media?.ended ?? null,
       currentTime: wdPlaybackNumber(media?.currentTime), readyState: media?.readyState ?? null,
-      courseRetries, resumeFailures, ...details,
+      control: media?.control ?? null, courseRetries, resumeFailures, ...details,
     };
     next = (next + 1) % wdPlaybackLogLimit;
     total += 1;
@@ -32,7 +32,7 @@ export function createPlaybackLog(now) {
     observe(page, context) {
       if (!enabled) return;
       if (page.route === route && !Object.hasOwn(page, 'media')) return;
-      media = page.media ? { ...page.media, readyState: page.player?.readyState } : null;
+      media = page.media ? { ...page.media, id: page.player?.id, readyState: page.player?.readyState, control: page.player?.control } : null;
       if (page.route === route) return;
       route = page.route;
       pageKind = page.kind;

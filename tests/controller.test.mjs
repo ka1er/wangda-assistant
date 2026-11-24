@@ -17,7 +17,7 @@ export function fixture(shared = {}, options = {}) {
     openSubject: item => { actions.push(['subject', item.id]); return true; }, openCourse: item => { actions.push(['course', item.id]); return true; },
     selectSection: id => { actions.push(['section', id]); return true; }, pauseMedia: () => actions.push('pause'), leaveLearning: () => actions.push('leave'),
     playCurrentMedia: () => { actions.push('play'); return options.play ? options.play() : Promise.resolve(true); },
-    watchPlayback: options.watchPlayback };
+    watchPlayback: options.watchPlayback, visibility: options.visibility };
   const c = createController({ adapter, storage, locks, notify: options.notify, now: () => new Date(time), owner: options.owner || Math.random().toString(), setInterval: () => 1, clearInterval: () => {} });
   return { c, shared, actions, adapter, page: value => { if (value) page = { ...page, ...value }; return page; }, advance: ms => { time += ms; }, config: () => c.setWindow({ start: '09:00', end: '24:00' }) };
 }
@@ -283,7 +283,7 @@ test('普通暂停仅在前台确认无推进才计失败，退避且三次后�
     }
     assert.equal(f.c.getState().status, 'paused');
     assert.match(f.c.getState().message, /自动恢复.*3/u);
-    assert.equal(notices.length, 1);
+    assert.equal(notices.length, 0);
     assert.equal(f.actions.includes('leave'), false);
     assert.match(f.c.getPlaybackLogText(), /"event":"manual-intervention"/u);
     const before = [...f.actions];
@@ -358,7 +358,7 @@ test('播放时间推进清空之前的三次课程重试，随后一次有效�
   f.c.setPlaybackLogging(true);
   await f.c.start();
   await f.c.tick();
-  for (const delay of [5000, 10000, 20000]) await elapse(f, delay);
+  for (const delay of [5000, 10000, 20000]) await elapse(f, 8000 + delay);
   assert.equal(plays, 4);
   f.page({ media: { ended: false, paused: false, currentTime: 5 } });
   await elapse(f, 1000);
@@ -374,6 +374,108 @@ test('播放时间推进清空之前的三次课程重试，随后一次有效�
   await elapse(f, 1000);
   assert.equal(f.c.getState().status, 'running');
   assert.equal(f.actions.includes('leave'), false);
+  f.c.destroy();
+});
+
+test('后台第三次退避中播放器已经恢复，确认进度便取消退避和计数', async () => {
+  for (const source of ['user', 'platform-or-browser']) {
+    let listen;
+    let visibility = 'visible';
+    const f = await ready(fixture({}, {
+      watchPlayback: listener => { listen = listener; },
+      visibility: () => visibility,
+      play: async () => false,
+    }));
+    await f.c.setAutomation({ enabled: true, resumeOnReload: false });
+    f.page(course([section()], {
+      player: { id: 1, seekRevision: 0, readyState: 4, control: 'play' },
+      media: { ended: false, paused: true, currentTime: 5 },
+    }));
+    f.c.setPlaybackLogging(true);
+    await f.c.start();
+    await f.c.tick();
+    for (const ms of [8000, 5000, 8000, 10000, 8000]) await elapse(f, ms);
+    assert.match(f.c.getState().message, /等待重试 3\/3/u);
+    visibility = 'hidden';
+    listen('visibility');
+    f.advance(60000);
+    const playerId = source === 'user' ? 1 : 2; // The page may remount the same section's player.
+    f.page({ player: { id: playerId, seekRevision: 0, readyState: 4, control: 'pause' } });
+    f.page({ media: { ended: false, paused: false, currentTime: 5 } });
+    listen('play', { id: playerId, source, trusted: true });
+    assert.equal(f.c.getState().phase, 'retrying');
+    f.page({ media: { ended: false, paused: false, currentTime: 5.75 } });
+    listen('timeupdate', { id: playerId });
+    assert.equal(f.c.getState().phase, 'running');
+    assert.doesNotMatch(f.c.getState().message, /重试|人工/u);
+    assert.equal(f.actions.filter(action => action === 'play').length, 3);
+    assert.match(f.c.getPlaybackLogText(), /"previous":3,"reason":"current-time-advanced"/u);
+    assert.match(f.c.getPlaybackLogText(), /"outcome":"playback-confirmed"/u);
+    assert.doesNotMatch(f.c.getPlaybackLogText(), /"event":"manual-intervention"/u);
+    visibility = 'visible';
+    listen('visibility');
+    assert.equal(f.c.getState().problem, null);
+    f.c.destroy();
+  }
+});
+
+test('播放器控件暂停期间助手不抢播，面板暂停后手动播放不重开队列', async () => {
+  let listen;
+  const f = await ready(fixture({}, { watchPlayback: listener => { listen = listener; } }));
+  const signal = (event, source = 'user') => listen(event, { id: 1, source, trusted: true });
+  f.page(course([section()], {
+    player: { id: 1, seekRevision: 0, readyState: 4, control: 'pause' },
+    media: { ended: false, paused: false, currentTime: 4 },
+  }));
+  f.c.setPlaybackLogging(true);
+  await f.c.start();
+  await f.c.tick();
+  f.page({ media: { ended: false, paused: true, currentTime: 4 } });
+  signal('pause');
+  await elapse(f, 6000);
+  assert.match(f.c.getState().message, /手动暂停/u);
+  assert.ok(!f.actions.includes('play'));
+  f.page({ media: { ended: false, paused: false, currentTime: 4 } });
+  signal('play');
+  f.page({ media: { ended: false, paused: false, currentTime: 5 } });
+  signal('timeupdate');
+  assert.equal(f.c.getState().status, 'running');
+  assert.doesNotMatch(f.c.getState().message, /手动暂停/u);
+  await f.c.pause();
+  f.actions.length = 0;
+  signal('play');
+  signal('timeupdate');
+  assert.equal(f.c.getState().status, 'paused');
+  assert.equal(f.c.getState().problem, null);
+  assert.deepEqual(f.actions, []);
+  const rows = f.c.getPlaybackLogText().split('\n').slice(1).map(line => JSON.parse(line));
+  assert.ok(rows.some(row => row.mediaEvent === 'pause' && row.source === 'user' && row.paused));
+  assert.ok(rows.some(row => row.event === 'progress' && row.source === 'user'));
+  assert.ok(rows.some(row => row.mediaEvent === 'play' && row.runnerStatus === 'paused'));
+  f.c.destroy();
+});
+
+test('已显示的播放提示在同一播放器推进后撤销，其他播放器不能解除', async () => {
+  let listen;
+  const f = await ready(fixture({}, { watchPlayback: listener => { listen = listener; }, play: async () => false }));
+  const player = { id: 1, seekRevision: 0, readyState: 4 };
+  f.page(course([section()], { player, media: { ended: false, paused: true, currentTime: 3 } }));
+  f.c.setPlaybackLogging(true);
+  await f.c.start();
+  await f.c.tick();
+  await elapse(f, 8000);
+  assert.ok(f.c.getState().problem);
+  f.page({ player: { ...player, id: 2 }, media: { ended: false, paused: false, currentTime: 4 } });
+  listen('playing', { id: 2, source: 'user', trusted: true });
+  assert.ok(f.c.getState().problem);
+  f.page({ player, media: { ended: false, paused: false, currentTime: 3 } });
+  listen('play', { id: 1, source: 'user', trusted: true });
+  assert.ok(f.c.getState().problem);
+  f.page({ media: { ended: false, paused: false, currentTime: 4 } });
+  listen('timeupdate', { id: 1 });
+  assert.equal(f.c.getState().problem, null);
+  assert.equal(f.c.getState().status, 'paused');
+  assert.match(f.c.getPlaybackLogText(), /"event":"intervention-cleared"/u);
   f.c.destroy();
 });
 
@@ -439,7 +541,7 @@ test('持续暂停的慢速失败跨过一分钟仍保留已确认的失败计�
   }
   assert.equal(settlements.length, 3);
   assert.equal(f.c.getState().status, 'paused');
-  assert.equal(notices.length, 1);
+  assert.equal(notices.length, 0);
   assert.equal(f.actions.includes('leave'), false);
   f.c.destroy();
 });
@@ -526,8 +628,13 @@ test('播放成功后快照读取异常必须退出学习页，不能误当原�
 test('明确原生播放reject保留当前页供人工播放', async () => {
   const f = await ready(fixture({}, { play: () => Promise.reject(Error('autoplay blocked')) }));
   f.page(course([section()], { media: { ended: false, paused: true } })); await f.c.start(); await f.c.tick();
-  for (let i = 0; i < 5; i += 1) await Promise.resolve();
-  assert.equal(f.c.getState().status, 'paused'); assert.ok(f.actions.includes('pause')); assert.ok(!f.actions.includes('leave')); assert.match(f.c.getState().message, /播放失败/u);
+  await elapse(f, 7000);
+  assert.equal(f.c.getState().status, 'running');
+  await elapse(f, 1000);
+  assert.equal(f.c.getState().status, 'paused');
+  assert.ok(!f.actions.includes('pause'));
+  assert.ok(!f.actions.includes('leave'));
+  assert.match(f.c.getState().message, /播放失败/u);
 });
 test('课程完成宽限期只接受已选下一课，不能覆盖用户离开页面', async () => {
   const f = fixture(); f.page({ courses: [...f.page().courses, { id: 'd', title: '选修', required: false, route: '#/study/course/detail/subject-course/d/6/s' }] }); await ready(f);
@@ -551,7 +658,7 @@ test('加载和导航有限超时，合法learning不超时', async () => {
   const g = await ready(fixture()); g.page(course([section('doc', 1)])); await g.c.start(); await g.c.tick(); await elapse(g, 600000); assert.equal(g.c.getState().status, 'running'); await g.c.pause();
 });
 test('blocked媒体只尝试一次，未知播放器等待后人工暂停', async () => {
-  const f = await ready(fixture({}, { play: () => Promise.resolve(false) })); f.page(course([section()], { media: { ended: false, paused: true } })); await f.c.start(); await f.c.tick(); await Promise.resolve(); await f.c.tick(); assert.equal(f.actions.filter(x => x === 'play').length, 1); assert.equal(f.c.getState().status, 'paused'); assert.ok(!f.actions.includes('leave'));
+  const f = await ready(fixture({}, { play: () => Promise.resolve(false) })); f.page(course([section()], { media: { ended: false, paused: true } })); await f.c.start(); await f.c.tick(); await elapse(f, 8000); assert.equal(f.actions.filter(x => x === 'play').length, 1); assert.equal(f.c.getState().status, 'paused'); assert.ok(!f.actions.includes('leave'));
   const g = await ready(fixture()); g.page(course([section()])); await g.c.start(); await g.c.tick(); await elapse(g, 31000); assert.equal(g.c.getState().status, 'paused'); assert.match(g.c.getState().message, /播放器/u);
 });
 test('混入旧课节或多focus不能宣布完成', async () => {

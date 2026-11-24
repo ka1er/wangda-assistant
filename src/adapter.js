@@ -270,6 +270,34 @@ function wdAdapterMediaState(media) {
   return wdAdapterMediaStates.get(media);
 }
 
+const wdAdapterPlaybackControlSelector = 'button, [role="button"], [aria-label], [title]';
+
+function wdAdapterControlAction(control) {
+  for (const value of [control.getAttribute('aria-label'), control.getAttribute('title'), control.textContent]) {
+    const label = value?.trim().toLowerCase();
+    if (/^(?:播放(?:视频)?|继续(?:播放)?|play|resume)$/u.test(label)) return 'play';
+    if (/^(?:暂停(?:播放|视频)?|pause)$/u.test(label)) return 'pause';
+  }
+  return null;
+}
+
+function wdAdapterPlayerControls(media) {
+  const controls = new Map();
+  let group = media.parentElement;
+  for (let level = 0; group && !group.matches('body,html') && level < 3; level += 1, group = group.parentElement) {
+    if (group.querySelectorAll('video,audio').length !== 1) break;
+    for (const control of group.querySelectorAll(wdAdapterPlaybackControlSelector)) {
+      if (control === media || control.closest('#wangda-assistant')) continue;
+      const binding = control.getAttribute('aria-controls');
+      if (binding && binding !== media.id) continue;
+      const action = wdAdapterControlAction(control);
+      if (action && wdAdapterVisible(control)) controls.set(control, action);
+    }
+    if (controls.size) break;
+  }
+  return controls;
+}
+
 function wdAdapterResolveMedia(document, page) {
   const all = [...document.querySelectorAll('video,audio')];
   const visible = all.filter(wdAdapterVisible);
@@ -590,7 +618,9 @@ export function readPage(document, hash) {
       const media = resolvedMedia.target;
       const currentTime = media.currentTime, duration = media.duration;
       const player = wdAdapterMediaState(media);
-      page.player = { id: player.id, seekRevision: player.seekRevision, seeking: media.seeking, readyState: media.readyState };
+      const controls = new Set(wdAdapterPlayerControls(media).values());
+      page.player = { id: player.id, seekRevision: player.seekRevision, seeking: media.seeking, readyState: media.readyState,
+        control: controls.size > 1 ? 'mixed' : controls.values().next().value ?? null };
       // A source lets play() start loading even when the platform uses preload="none".
       page.mediaReady = !media.paused || media.ended || media.readyState >= media.HAVE_METADATA
         || Boolean(media.currentSrc || media.srcObject || media.getAttribute('src')?.trim()
@@ -762,12 +792,18 @@ export function createAdapter(win) {
     win.location.hash = route;
     return true;
   };
+  const markMediaCommand = (media, type, call) => {
+    const paused = media.paused;
+    const result = call();
+    if (media.paused !== paused) wdAdapterMediaState(media).command = { type, at: win.performance.now() };
+    return result;
+  };
   const pauseMedia = () => {
     const page = read();
     if (page.kind !== 'course') return false;
     const resolved = wdAdapterResolveMedia(win.document, page);
     if (resolved.status !== 'resolved') return false;
-    try { resolved.target.pause(); return true; } catch { return false; }
+    try { markMediaCommand(resolved.target, 'pause', () => resolved.target.pause()); return true; } catch { return false; }
   };
   return {
     read,
@@ -776,19 +812,52 @@ export function createAdapter(win) {
       const doc = win.document;
       const visibility = () => listener('visibility');
       const route = event => listener('route', wdAdapterRoute(new URL(event.newURL || win.location.href).hash));
+      const controlInput = event => {
+        if (!event.isTrusted || wdAdapterRoute(win.location.hash).kind !== 'course') return;
+        const control = event.composedPath().find(node => node.matches?.(wdAdapterPlaybackControlSelector) && wdAdapterControlAction(node));
+        if (!control) return;
+        const target = wdAdapterResolveMedia(doc, read()).target;
+        if (!target) return;
+        const type = wdAdapterPlayerControls(target).get(control);
+        if (!type || target.paused !== (type === 'play')) return;
+        const player = wdAdapterMediaState(target);
+        player.controlInput = { type, at: win.performance.now() };
+        listener('control-input', { id: player.id, source: 'user', action: type, trusted: true });
+      };
       const media = event => {
         if (!event.target?.matches?.('video,audio')) return;
-        const player = wdAdapterMediaState(event.target);
-        if (event.type === 'seeking') player.seekRevision += 1;
-        else listener('pause', player.id);
+        const target = event.target;
+        const player = wdAdapterMediaState(target);
+        const type = event.type;
+        if (type === 'seeking') { player.seekRevision += 1; return; }
+        const at = win.performance.now();
+        if (type === 'timeupdate') {
+          if (target.paused || at - (player.lastSampleAt ?? -Infinity) < 750) return;
+          player.lastSampleAt = at;
+          listener(type, { id: player.id });
+          return;
+        }
+        let source = event.isTrusted ? 'platform-or-browser' : 'unattributed';
+        if (type === 'playing') source = player.playSource || source;
+        else {
+          if (player.command?.type === type && at - player.command.at < 2000) source = 'assistant';
+          else if (event.isTrusted && player.controlInput?.type === type && at - player.controlInput.at < 2000) source = 'user';
+          player.command = player.controlInput = null;
+          player.playSource = type === 'play' ? source : null;
+          if (type === 'play') player.lastSampleAt = null;
+        }
+        listener(type, { id: player.id, source, trusted: event.isTrusted });
       };
+      const mediaEvents = ['play', 'playing', 'pause', 'timeupdate', 'seeking'];
       doc.addEventListener('visibilitychange', visibility);
       win.addEventListener('hashchange', route);
-      for (const type of ['pause', 'seeking']) doc.addEventListener(type, media, true);
+      doc.addEventListener('click', controlInput, true);
+      for (const type of mediaEvents) doc.addEventListener(type, media, true);
       return () => {
         doc.removeEventListener('visibilitychange', visibility);
         win.removeEventListener('hashchange', route);
-        for (const type of ['pause', 'seeking']) doc.removeEventListener(type, media, true);
+        doc.removeEventListener('click', controlInput, true);
+        for (const type of mediaEvents) doc.removeEventListener(type, media, true);
       };
     },
     goSearch() { return navigate('#/search', 'search'); },
@@ -865,7 +934,7 @@ export function createAdapter(win) {
       if (resolved.status !== 'resolved') return false;
       const media = resolved.target;
       if (!media.paused || media.ended) return false;
-      try { if (mute) media.muted = true; await media.play(); return true; }
+      try { if (mute) media.muted = true; await markMediaCommand(media, 'play', () => media.play()); return true; }
       catch (error) {
         const name = error?.name;
         expected?.onNativeError?.(['NotAllowedError', 'NotSupportedError', 'AbortError', 'SecurityError'].includes(name) ? name : 'OtherError');
