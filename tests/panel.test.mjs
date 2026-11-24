@@ -22,10 +22,11 @@ function fixture(overrides = {}) {
 }
 const visibleText = node => [node, ...node.querySelectorAll('*')].filter(n => n.tagName !== 'STYLE' && !n.closest?.('[hidden]')).flatMap(n => [...n.childNodes].filter(child => child.nodeType === 3).map(child => child.textContent)).join(' ');
 
-test('清除已完成按钮展示可清数量，运行时保留当前任务，无完成项及不可编辑时禁用', async () => {
+test('清除已完成按钮展示可清数量，无完成项时隐藏，运行时保留当前任务', async () => {
   const done=task('done',[course('d')]);done.done=['d'];const current=task('current',[course('c')]);current.done=['c'];const f=fixture({tasks:[done,current,task('pending')],status:'running',activeTaskId:'current',currentCourseId:'c'});f.panel.open();
-  const clear=f.root.querySelector('[data-action="clear-completed"]');assert.ok(clear);assert.match(clear.textContent,/清除已完成.*1/u);assert.equal(clear.disabled,false);await f.click('clear-completed');assert.deepEqual(f.calls.at(-1),['clearCompletedTasks']);assert.equal(f.calls.some(call=>call[0]==='pause'),false);
-  f.emit({status:'paused'});assert.match(clear.textContent,/2/u);for(const patch of [{status:'preparing'},{status:'paused',phase:'resuming'},{status:'paused',phase:'paused',unavailable:true},{unavailable:false,tasks:[task('pending')]}]){f.emit(patch);assert.equal(clear.disabled,true);}f.close();
+  const clear=f.root.querySelector('[data-action="clear-completed"]');assert.ok(clear);assert.equal(clear.hidden,false);assert.match(clear.textContent,/清除已完成.*1/u);assert.equal(clear.disabled,false);await f.click('clear-completed');assert.deepEqual(f.calls.at(-1),['clearCompletedTasks']);assert.equal(f.calls.some(call=>call[0]==='pause'),false);
+  f.emit({status:'paused'});assert.match(clear.textContent,/2/u);for(const patch of [{status:'preparing'},{status:'paused',phase:'resuming'},{status:'paused',phase:'paused',unavailable:true}]){f.emit(patch);assert.equal(clear.disabled,true);}
+  f.emit({unavailable:false,tasks:[task('pending')]});assert.equal(clear.hidden,true);assert.equal(clear.disabled,true);f.close();
 });
 
 test('自动模式内静音开关默认开启且独立于自动重试，选择保存后保持', async () => {
@@ -62,7 +63,7 @@ test('当前专区置顶、完成专区沉底且不改保存顺序，暂停与�
   assert.equal(f.root.querySelector('[data-task-id="active"]').dataset.state,'active');assert.equal(f.root.querySelector('[data-task-id="done"]').dataset.state,'completed');
   assert.equal(f.root.querySelector('[data-task-progress="done"]').value,1);assert.match(f.root.querySelector('[data-task-id="active"]').textContent,/优先级 2/u);
   await f.click('detail-active');const detail=f.root.querySelector('[data-task-detail="active"]');const filter=detail.querySelector('input[type=search]');filter.value='课程v';filter.focus();
-  f.emit({status:'paused',phase:'paused'});assert.deepEqual(order(),['active','waiting','done']);assert.match(f.root.querySelector('[data-task-summary="active"]').textContent,/已暂停/u);assert.equal(f.root.activeElement,filter);
+  f.emit({status:'paused',phase:'paused'});assert.deepEqual(order(),['active','waiting','done']);assert.match(f.root.querySelector('header').textContent,/已暂停/u);assert.match(f.root.querySelector('[data-task-summary="active"]').textContent,/当前 · 完成 0\/1 门/u);assert.equal(f.root.activeElement,filter);
   active.done=['v'];f.emit({tasks:[done,waiting,active],status:'complete',currentCourseId:null});assert.deepEqual(order(),['waiting','done','active']);assert.equal(detail,f.root.querySelector('[data-task-detail="active"]'));assert.equal(detail.hidden,false);assert.equal(f.root.activeElement,filter);
   active.recheck=['v'];f.emit({tasks:[done,waiting,active],status:'paused'});assert.deepEqual(order(),['waiting','active','done']);assert.notEqual(f.root.querySelector('[data-task-id="active"]').dataset.state,'completed');f.close();
 });
@@ -87,7 +88,7 @@ test('当前课程覆盖旧卡片状态，展示课节时间但播放结束不�
   f.emit({currentPlayback:{...playback,currentTime:3101,ended:true,paused:true}});assert.match(row.textContent,/等待平台确认完成/u);assert.match(f.root.querySelector('[data-task-summary="t"]').textContent,/完成 0/u);assert.equal(f.root.querySelector('[data-task-progress="t"]').value,0);
   f.emit({status:'running',phase:'retrying',currentPlayback:null});assert.match(row.textContent,/正在重试/u);assert.equal(row.querySelector('progress').hidden,true);
   f.emit({phase:'running',currentPlayback:{...playback,taskId:'other'}});assert.doesNotMatch(row.textContent,/13:48/u);assert.equal(row.querySelector('progress').hidden,true);
-  f.emit({status:'paused',phase:'paused',currentPlayback:null});assert.match(row.textContent,/已暂停/u);f.close();
+  f.emit({status:'paused',phase:'paused',currentPlayback:null});assert.match(f.root.querySelector('header').textContent,/已暂停/u);assert.match(row.textContent,/当前课程/u);f.close();
 });
 
 test('空选择、跳过、待处理和复查不归入全部完成专区', () => {
@@ -105,7 +106,7 @@ test('课程名称筛选保留隐藏勾选、完成匹配自动展开、焦点�
   const t=task('t',[course('a'),course('b','completed',true),course('c')]); const f=fixture({tasks:[t]});f.panel.open();await f.click('detail-t');
   const filter=f.root.querySelector('[name="course-filter-t"]');assert.ok(filter); filter.focus();filter.value='课程b';filter.dispatchEvent(new f.dom.window.Event('input'));f.emit({message:'更新'});
   const detail=f.root.querySelector('[data-task-detail="t"]'); assert.equal(f.root.activeElement,filter);assert.equal(filter.value,'课程b');assert.equal(detail.querySelector('[data-course="a"]').closest('label').hidden,true);assert.equal(detail.querySelector('[data-course="a"]').checked,true);
-  assert.equal(detail.querySelector('[data-course="b"]').closest('label').hidden,false);assert.equal(detail.querySelector('[data-completed]').open,true);assert.match(detail.textContent,/已选 3 门/u);assert.match(detail.textContent,/筛选不会取消/u);
+  assert.equal(detail.querySelector('[data-course="b"]').closest('label').hidden,false);assert.equal(detail.querySelector('[data-completed]').open,true);assert.match(detail.textContent,/已选 3\/3 门（含 2 门未显示）/u);assert.doesNotMatch(detail.textContent,/筛选不会取消/u);
   filter.value='不存在';filter.dispatchEvent(new f.dom.window.Event('input'));assert.equal(detail.querySelector('[data-no-matches]').hidden,false);f.close();
 });
 
@@ -152,7 +153,8 @@ test('首页仅队列，添加搜索候选和草稿分阶段展示，加入后�
   await f.click('candidate-s'); assert.deepEqual(f.calls.at(-1), ['chooseCandidate', 's']);
   f.emit({ draft: { target: '输入专区', subject: task().subject, courses: [course('a'), course('b', 'completed', false, false), course('c', 'unknown', false)] } });
   assert.equal(f.root.querySelector('[data-candidates]').hidden, true);
-  assert.equal(f.root.querySelector('[data-action="start"]').disabled, true);
+  assert.equal(f.root.querySelector('[data-action="start"]'), null);
+  assert.equal(f.root.querySelector('[data-action="run-toggle"]').disabled, true);
   const input = f.root.querySelector('[data-draft] [data-course="c"]'); input.checked = true; input.dispatchEvent(new f.dom.window.Event('change')); await Promise.resolve(); assert.deepEqual(f.calls.at(-1), ['draftSetSelection', 'c', true]);
   await f.click('add-draft'); assert.equal(f.root.querySelector('[data-view="queue"]').hidden, false); assert.equal(f.root.querySelector('[data-view="add"]').hidden, true); assert.match(f.root.textContent, /正式专区标题/u); f.close();
 });
@@ -174,14 +176,17 @@ test('任务详情支持勾选、更新和移出，运行时只禁编辑，完�
   const check = detail.querySelector('[data-course="d"]'); check.checked = true; check.dispatchEvent(new f.dom.window.Event('change')); for (let i = 0; i < 20; i++) await Promise.resolve(); assert.deepEqual(f.calls.at(-1), ['setSelection', 't', 'd', true]);
   await f.click('refresh-t'); await f.click('retry-t-c'); assert.deepEqual(f.calls.at(-1), ['retry', 't', 'c']); completed.open = true;
   f.emit({ status: 'running' }); assert.equal(detail.querySelector('[data-course="d"]').disabled, true); assert.equal(f.root.querySelector('[data-action="refresh-t"]').disabled, true); assert.equal(f.root.querySelector('[data-action="detail-t"]').disabled, false); assert.equal(completed.open, true);
-  await f.click('detail-t'); await f.click('detail-t'); assert.equal(detail.hidden, false); f.emit({ status: 'paused' }); await f.click('remove-t'); assert.deepEqual(f.calls.at(-1), ['removeTask', 't']); f.close();
+  await f.click('detail-t'); await f.click('detail-t'); assert.equal(detail.hidden, false); f.emit({ status: 'paused' });
+  const removeBtn = f.root.querySelector('[data-action="remove-t"]'); assert.match(removeBtn.className, /danger/u);
+  await f.click('remove-t'); assert.equal(f.calls.some(call => call[0] === 'removeTask'), false); assert.equal(removeBtn.textContent, '确认移出？');
+  await f.click('remove-t'); assert.deepEqual(f.calls.at(-1), ['removeTask', 't']); f.close();
 });
 
 test('时间设置保存和开始前保存，tick保留输入焦点、脏值、折叠状态且诊断可重复', async () => {
   const f = fixture({ tasks: [task()] }); f.panel.open(); const start = f.root.querySelector('[name="start"]'); start.focus(); start.value = '10:00'; start.dispatchEvent(new f.dom.window.Event('input'));
   f.emit({ message: '刷新状态' }); assert.equal(f.root.activeElement, start); assert.equal(start.value, '10:00'); assert.ok(start.labels.length);
   await f.click('save-window'); assert.deepEqual(f.calls.find(call => call[0] === 'setWindow'), ['setWindow', { start: '10:00', end: '24:00' }]);
-  start.value = '11:00'; start.dispatchEvent(new f.dom.window.Event('input')); await f.click('start'); assert.deepEqual(f.calls.slice(-2), [['setWindow', { start: '11:00', end: '24:00' }], ['start']]);
+  start.value = '11:00'; start.dispatchEvent(new f.dom.window.Event('input')); await f.click('run-toggle'); assert.deepEqual(f.calls.slice(-2), [['setWindow', { start: '11:00', end: '24:00' }], ['start']]);
   await f.click('diagnose'); await f.click('diagnose'); assert.equal(f.calls.filter(call => call[0] === 'diagnose').length, 2); assert.ok(f.root.querySelector('[aria-live="polite"]')); assert.ok([...f.root.querySelectorAll('button')].every(button => button.type === 'button')); f.close();
 });
 
@@ -205,9 +210,9 @@ test('添加未确认时问题重试和跳过不能启动已有队列；取消�
   await f.click('back'); assert.equal(f.root.querySelector('[data-action="retry"]').disabled, false); assert.equal(f.root.querySelector('[data-action="skip"]').disabled, false); f.close();
 });
 
-test('取消勾选跳过课后仍提示待重试，不能把任务标成全部完成', () => {
+test('取消勾选跳过课后仍提示跳过数，不能把任务标成全部完成', () => {
   const t = task('t', [course('a'), course('b', 'not-started', false)]); t.done = ['a']; t.skipped = ['b'];
-  const f = fixture({ tasks: [t] }); assert.match(f.root.querySelector('[data-task-summary="t"]').textContent, /跳过课程待重试/u); f.close();
+  const f = fixture({ tasks: [t] }); assert.match(f.root.querySelector('[data-task-summary="t"]').textContent, /跳过 1/u); assert.notEqual(f.root.querySelector('[data-task-id="t"]').dataset.state, 'completed'); f.close();
 });
 
 test('controller确认加入草稿的状态更新也会返回队列', () => {
@@ -226,7 +231,7 @@ test('自动设置保存、批量选择、待处理原因和收起总进度都�
   await f.click('select-required-t'); assert.deepEqual(f.calls.at(-1),['selectCourses','t','required']);
   f.emit({status:'running',phase:'retrying',message:'正在等待重试 1/3。'}); await f.click('toggle');
   assert.match(f.root.querySelector('header').textContent,/正在重试.*总完成 0\/1/su); assert.match(f.root.querySelector('header').textContent,/课程a.*重试 1\/3/su);
-  assert.equal(automatic.disabled,true); f.emit({status:'waiting',phase:'waiting'}); assert.equal(f.root.querySelector('[data-action="start"]').disabled,true); assert.equal(f.root.querySelector('[data-action="run-toggle"]').disabled,false); f.close();
+  assert.equal(automatic.disabled,true); f.emit({status:'waiting',phase:'waiting'}); assert.equal(f.root.querySelector('[data-action="start"]'),null); assert.equal(f.root.querySelector('[data-action="run-toggle"]').disabled,false); f.close();
 });
 
 test('收起主按钮开始前保存时段，准备、等待、恢复时均可暂停', async () => {
@@ -249,13 +254,28 @@ test('空队列、未确认添加、无待学或不可用时不能从标题启�
   f.emit({tasks:[{...task(),deferred:[{courseId:'a',reason:'人工处理'}]}]}); assert.equal(run.disabled,true); f.close();
 });
 
-test('标题和展开开始按钮共用启动锁，连续点击只启动一次', async () => {
+test('顶部唯一主按钮带启动锁，连续点击只启动一次，无重复底部开始按钮', async () => {
   const f = fixture({tasks:[task()]}); let release; f.panel.destroy();
   const controller = {getState:()=>structuredClone(f.state),subscribe:()=>()=>{},start:()=>new Promise(resolve=>{ f.calls.push(['start']); release=resolve; })};
   const panel = createPanel(f.dom.window,controller,'test'); const root=f.dom.window.document.getElementById('wangda-assistant').shadowRoot;
-  const run=root.querySelector('[data-action="run-toggle"]'); assert.ok(run); run.click(); for(let i=0;i<10;i++)await Promise.resolve();
-  assert.equal(run.disabled,true); assert.equal(root.querySelector('[data-action="start"]').disabled,true); root.querySelector('[data-action="start"]').click(); run.click();
+  const run=root.querySelector('[data-action="run-toggle"]'); assert.ok(run); assert.equal(root.querySelector('[data-action="start"]'),null); assert.match(run.className,/primary/u);
+  run.click(); for(let i=0;i<10;i++)await Promise.resolve();
+  assert.equal(run.disabled,true); run.click();
   assert.equal(f.calls.filter(c=>c[0]==='start').length,1); release(true); for(let i=0;i<30;i++)await Promise.resolve(); assert.equal(run.disabled,false); panel.destroy(); f.close();
+});
+
+test('已完成卡片和单任务隐藏排序控件，非归属页隐藏退出学习页按钮', async () => {
+  const done = task('done', [course('d')]); done.done = ['d'];
+  const f = fixture({ tasks: [task('only'), done], onOwnedLearningPage: false }); f.panel.open();
+  assert.equal(f.root.querySelector('[data-task-id="only"] .sort-actions').hidden, true);
+  assert.equal(f.root.querySelector('[data-task-id="done"] .sort-actions').hidden, true);
+  assert.equal(f.root.querySelector('[data-action="stop-learning"]').hidden, true);
+  f.emit({ tasks: [task('a'), task('b'), done], onOwnedLearningPage: true });
+  assert.equal(f.root.querySelector('[data-task-id="a"] .sort-actions').hidden, false);
+  assert.equal(f.root.querySelector('[data-task-id="done"] .sort-actions').hidden, true);
+  const leaveBtn = f.root.querySelector('[data-action="stop-learning"]');
+  assert.equal(leaveBtn.hidden, false); assert.equal(leaveBtn.textContent, '退出学习页');
+  await f.click('stop-learning'); assert.deepEqual(f.calls.at(-1), ['pause']); f.close();
 });
 
 test('等待平台确认阶段和媒体结束后超时原因在面板清晰可见', async () => {
@@ -278,5 +298,59 @@ test('等待平台确认阶段和媒体结束后超时原因在面板清晰可�
   const timeoutReason = '媒体播放结束后平台仍报未完成，等待平台确认超时（90秒）。已暂停并退出学习页，请人工核对学时记录。';
   f.emit({ status: 'paused', phase: 'paused', currentPlayback: null, message: timeoutReason, problem: { taskId: 't', courseId: 'a', reason: timeoutReason } });
   assert.match(f.root.querySelector('[data-problem]').textContent, /等待平台确认超时（90秒）/u);
+  f.close();
+});
+
+test('精简说明与子页聚焦：无冗余提示、回车搜索、设置折叠带摘要、报错上移且诊断可收起', async () => {
+  const f = fixture({ tasks: [] }); f.panel.open();
+  assert.doesNotMatch(visibleText(f.root), /拖动 ↕|切换范围会重设|筛选不会取消|自动重试开启后/u);
+  assert.match(f.root.querySelector('[data-settings] summary').textContent, /09:00–24:00.*已静音/u);
+  await f.click('add');
+  assert.equal(f.root.querySelector('[data-settings]').hidden, true);
+  const target = f.root.querySelector('[name="target"]'); target.value = '安全专区';
+  target.dispatchEvent(new f.dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+  for (let i = 0; i < 30; i++) await Promise.resolve();
+  assert.deepEqual(f.calls.at(-1), ['search', '安全专区']);
+  await f.click('back');
+  assert.equal(f.root.querySelector('[data-settings]').hidden, false);
+  await f.click('save-window');
+  assert.equal(f.root.querySelector('[data-action="save-window"]').textContent, '已保存');
+  await f.click('diagnose');
+  assert.equal(f.root.querySelector('[data-diagnostic-box]').hidden, false);
+  await f.click('close-diagnose');
+  assert.equal(f.root.querySelector('[data-diagnostic-box]').hidden, true);
+  f.close();
+});
+
+test('操作异常提示显示在顶部警告条而非底部诊断pre，且复查与全选已完成收进已完成折叠区', async () => {
+  const f = fixture({ tasks: [task()] }); f.panel.open();
+  await f.click('detail-t');
+  const detail = f.root.querySelector('[data-task-detail="t"]');
+  const completed = detail.querySelector('[data-completed]');
+  assert.ok(completed.querySelector('[data-action="select-completed-t"]'));
+  assert.ok(completed.querySelector('[data-action="recheck-t"]'));
+  assert.equal(detail.querySelectorAll('.detail-actions button').length, 2);
+  f.panel.destroy();
+  const broken = { getState: () => structuredClone(f.state), subscribe: () => () => {}, setSelection: async () => { throw Error('disk full'); }, diagnose: () => ({ kind: 'home' }) };
+  const p2 = createPanel(f.dom.window, broken, 'test'); p2.open();
+  const r2 = f.dom.window.document.getElementById('wangda-assistant').shadowRoot;
+  r2.querySelector('[data-action="detail-t"]').click();
+  const chk = r2.querySelector('[data-course="a"]'); chk.checked = false; chk.dispatchEvent(new f.dom.window.Event('change'));
+  for (let i = 0; i < 30; i++) await Promise.resolve();
+  assert.equal(r2.querySelector('.ui-error').hidden, false);
+  assert.match(r2.querySelector('.ui-error').textContent, /勾选未能保存/u);
+  assert.equal(r2.querySelector('pre').textContent, '');
+  p2.destroy(); f.close();
+});
+
+test('待处理课程原因去掉末尾句号并前置必选修标签，卡片标题带完整title', async () => {
+  const t = task('t', [course('a')]);
+  t.deferred = [{ courseId: 'a', reason: '此课节需要人工处理，请完成后重试。' }];
+  const f = fixture({ tasks: [t] }); f.panel.open();
+  assert.equal(f.root.querySelector('[data-task-id="t"] h3').title, '正式专区标题');
+  await f.click('detail-t');
+  const meta = f.root.querySelector('[data-course="a"]').closest('label').querySelector('small').textContent;
+  assert.equal(meta, '必修 · 待处理：此课节需要人工处理，请完成后重试');
+  assert.doesNotMatch(meta, /。\s*·/u);
   f.close();
 });

@@ -214,37 +214,41 @@ function mountPlaybackDiagnostics(win, diag, version) {
   const root = host.attachShadow({ mode: 'open' });
   root.innerHTML = `<style>
     :host{all:initial;position:fixed;left:16px;bottom:16px;z-index:2147483646;color:#25364a;font:13px/1.6 system-ui,sans-serif}
-    section{width:320px;background:#fff;border:1px solid #b9c9db;border-radius:10px;box-shadow:0 3px 18px #0002;overflow:hidden}
-    header{padding:9px 12px;background:#edf4fc;display:flex;align-items:center;justify-content:space-between}strong{font-size:14px}
-    main{padding:10px 12px;max-height:50vh;overflow:auto}p{margin:6px 0}button,select{font:inherit;padding:4px 8px;border:1px solid #b9c9db;border-radius:5px;background:#fff;color:#234c7a;cursor:pointer}button:disabled{opacity:.5;cursor:default}
-    .buttons{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}pre{white-space:pre-wrap;font:12px/1.5 system-ui;margin:8px 0;background:#f4f7fa;padding:8px;border-radius:6px}small{display:block;color:#586b7e}
-  </style><section><header><strong>播放暂停诊断</strong><button data-action="toggle">收起</button></header><main>
-    <small data-version></small><p>暂停其他自动学习脚本，手动播放课程。</p>
-    <label>此标签页 <select aria-label="此标签页标记"><option>A</option><option>B</option></select></label>
-    <p data-status></p><div class="buttons"><button data-action="start">开始记录</button><button data-action="stop">停止记录</button><button data-action="mark">标记此刻</button><button data-action="export">导出日志</button><button data-action="clear">清空</button></div>
-    <small data-capabilities></small><pre data-events></pre><small>只观察当前页面原生媒体。iframe、页面隔离或未知消息格式可能造成漏记。刷新前先导出；测试后禁用此脚本并刷新。</small>
+    [hidden]{display:none!important}
+    section{width:320px;max-width:calc(100vw - 32px);background:#fff;border:1px solid #b9c9db;border-radius:10px;box-shadow:0 3px 18px #0002;overflow:hidden}
+    header{padding:9px 12px;background:#edf4fc;display:flex;align-items:center;justify-content:space-between;gap:8px}strong{font-size:14px}
+    main{padding:10px 12px;max-height:50vh;overflow:auto}p{margin:6px 0}button,select{font:inherit;padding:4px 8px;min-height:30px;border:1px solid #b9c9db;border-radius:5px;background:#fff;color:#234c7a;cursor:pointer}button:disabled{opacity:.5;cursor:default}
+    button.primary{background:#176ac2;color:#fff;border-color:#176ac2}
+    .buttons{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}pre{white-space:pre-wrap;font:12px/1.5 system-ui;margin:8px 0;background:#f4f7fa;padding:8px;border-radius:6px}small{display:block;color:#586b7e}details{margin-top:8px}summary{cursor:pointer;color:#234c7a;font-size:12px}
+    @media (max-width:739px){:host{top:16px;bottom:auto;left:16px}main{max-height:40vh}}
+  </style><section><header><strong>播放暂停诊断</strong><button type="button" data-action="toggle">收起</button></header><main>
+    <small data-version></small>
+    <label>标签页 <select aria-label="此标签页标记"><option>A</option><option>B</option></select></label>
+    <p data-status></p><div class="buttons"><button type="button" data-action="toggle-record" class="primary">开始记录</button><button type="button" data-action="mark">标记此刻</button><button type="button" data-action="export">导出日志</button><button type="button" data-action="clear">清空</button></div>
+    <small data-capabilities></small><pre data-events></pre>
+    <details><summary>测试说明与限制</summary><small>暂停其他自动学习脚本，手动播放课程。只观察当前页面原生媒体，iframe、页面隔离或未知消息格式可能造成漏记。刷新前先导出；测试后禁用此脚本并刷新。</small></details>
   </main></section>`;
   root.querySelector('[data-version]').textContent = `${version} · 临时测试脚本`;
   const render = () => {
     const data = diag.exportData();
     root.querySelector('[data-status]').textContent = `${data.recording ? '记录中' : '已停止'} · ${data.events.length} 条${data.dropped ? ` · 已裁剪 ${data.dropped} 条` : ''}`;
-    root.querySelector('[data-action="start"]').disabled = data.recording;
-    root.querySelector('[data-action="stop"]').disabled = !data.recording;
+    const recordBtn = root.querySelector('[data-action="toggle-record"]');
+    recordBtn.textContent = data.recording ? '停止记录' : '开始记录';
+    recordBtn.className = data.recording ? '' : 'primary';
     root.querySelector('[data-action="mark"]').disabled = !data.recording;
     root.querySelector('select').value = data.role;
-    root.querySelector('[data-capabilities]').textContent = `暂停调用观察：${data.capabilities.pauseObserver ? '已布置' : '不可用'}；已观察学习连接：${data.capabilities.studySocketsObserved} 个（为 0 时不能排除平台通知）。`;
+    root.querySelector('[data-capabilities]').textContent = `暂停调用观察：${data.capabilities.pauseObserver ? '已布置' : '不可用'}；学习连接：${data.capabilities.studySocketsObserved} 个`;
     root.querySelector('[data-events]').textContent = data.events.slice(-7).map(event => {
       const time = new Date(event.at).toLocaleTimeString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' }) + '.' + event.at.slice(20, 23);
       if (event.kind === 'sample') return `${time} ${event.role} 播放器 ${event.media.length} 个 · ${event.media.map(media => `${media.id}: ${media.paused ? '暂停' : '播放'} ${media.currentTime}s`).join('，') || '未找到'}`;
       return `${time} ${event.role} ${wdDiagnosticNames[event.kind] || event.kind}${event.code ? `：${wdDiagnosticNames[event.code]}` : ''}`;
-    }).join('\n') || '点击“开始记录”后正常操作课程。';
+    }).join('\n') || '暂无记录';
   };
   const unsubscribe = diag.subscribe(render);
   root.querySelector('select').addEventListener('change', event => diag.setRole(event.target.value));
   root.addEventListener('click', event => {
     const action = event.target?.dataset?.action;
-    if (action === 'start') diag.start();
-    if (action === 'stop') diag.stop();
+    if (action === 'toggle-record') { if (diag.isRecording()) diag.stop(); else diag.start(); }
     if (action === 'mark') diag.mark();
     if (action === 'clear') diag.clear();
     if (action === 'toggle') {
@@ -258,6 +262,8 @@ function mountPlaybackDiagnostics(win, diag, version) {
       anchor.click(); win.setTimeout(() => win.URL.revokeObjectURL(url), 1000);
     }
   });
+  const narrow = Number.isFinite(win.innerWidth) && win.innerWidth > 0 && win.innerWidth < 740;
+  if (narrow) { root.querySelector('main').hidden = true; root.querySelector('[data-action="toggle"]').textContent = '展开'; }
   doc.body.appendChild(host); render();
   return { destroy() { unsubscribe(); host.remove(); } };
 }

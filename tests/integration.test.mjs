@@ -119,7 +119,7 @@ test('实际面板学习中清理上一完成专区，当前视频不断播，�
 });
 
 test('原生视频时间传到当前课程，结束后等待图文，平台全部完成才将专区变灰', async () => {
-  const f=setup();f.subject('s',[['a','未开始',true]]);await f.collect();const id=f.c.getState().tasks[0].id;f.panel.open();await f.click(`detail-${id}`);await f.click('start');await f.c.tick();f.course('a',true);
+  const f=setup();f.subject('s',[['a','未开始',true]]);await f.collect();const id=f.c.getState().tasks[0].id;f.panel.open();await f.click(`detail-${id}`);await f.click('run-toggle');await f.c.tick();f.course('a',true);
   const media=f.w.document.querySelector('video');Object.defineProperty(media,'currentTime',{value:828});Object.defineProperty(media,'duration',{value:3101});await f.c.tick();
   const card=f.root.querySelector(`[data-task-id="${id}"]`);const row=card.querySelector('[data-course="a"]').closest('label');assert.equal(card.dataset.state,'active');assert.match(row.textContent,/正在播放.*13:48 \/ 51:41/su);assert.match(f.root.querySelector('header').textContent,/13:48 \/ 51:41/u);assert.equal(f.c.getState().tasks[0].done.length,0);
   f.complete('v');await f.c.tick();await f.elapse(6000);await f.c.tick();assert.equal(f.c.getState().currentPlayback,null);assert.equal(row.querySelector('progress').hidden,true);assert.notEqual(card.dataset.state,'completed');
@@ -131,7 +131,7 @@ test('指定课程通过筛选手选已完成卡片，刷新不加新课，复�
   const mode=f.root.querySelector('[name="course-mode-draft"]');assert.ok(mode);mode.value='specific';mode.dispatchEvent(new f.w.Event('change'));for(let i=0;i<40;i++)await Promise.resolve();
   assert.deepEqual(f.c.getState().draft.courses.map(c=>c.selected),[false,false]);const filter=f.root.querySelector('[name="course-filter-draft"]');filter.value='课程b';filter.dispatchEvent(new f.w.Event('input'));
   assert.equal(f.root.querySelector('[data-draft] [data-completed]').open,true);await f.change('[data-draft] [data-course="b"]',true);await f.click('add-draft'); const id=f.c.getState().tasks[0].id;
-  await f.click('start');await f.c.tick();assert.match(f.w.location.hash,/subject-course\/b\/6\/s$/u);f.course('b');f.complete('doc');await f.c.tick();await f.c.tick();assert.equal(f.c.getState().status,'complete');
+  await f.click('run-toggle');await f.c.tick();assert.match(f.w.location.hash,/subject-course\/b\/6\/s$/u);f.course('b');f.complete('doc');await f.c.tick();await f.c.tick();assert.equal(f.c.getState().status,'complete');
   await f.click(`detail-${id}`);await f.click(`refresh-${id}`);f.subject('s',[['a','未开始',true],['b','已完成',false],['new','未开始',true]]);await f.c.tick();assert.deepEqual(f.c.getState().tasks[0].courses.map(c=>c.selected),[false,true,false]);
   await f.click(`recheck-${id}`);assert.deepEqual(f.c.getState().tasks[0].done,['b']);assert.equal(f.root.querySelector('[data-action="run-toggle"]').disabled,false);await f.click('run-toggle');await f.c.tick();f.course('b');await f.c.tick();assert.equal(f.c.getState().status,'running');assert.deepEqual(f.c.getState().tasks[0].recheck,['b']);
   f.complete('doc');await f.c.tick();assert.equal(f.c.getState().status,'complete');assert.deepEqual(f.c.getState().tasks[0].done,['b']);assert.deepEqual(f.c.getState().tasks[0].recheck,[]);f.close();
@@ -145,7 +145,7 @@ test('准备专题遇归档重学页时明确暂停，保留既有队列且不�
 
 test('播放期间拖动专区，当前课节保持，下一门进入新优先专区再返回原专区', async () => {
   const f=setup(); f.panel.open(); await f.add('s',[['a','学习中',true],['b','未开始',true]]); await f.click('add-draft'); await f.add('s2',[['z','学习中',false]]); await f.click('add-draft');
-  const [a,b]=f.c.getState().tasks; await f.click('start'); await f.c.tick(); f.course('a',true); let pauses=0; f.w.document.querySelector('video').pause=()=>{pauses++;}; await f.c.tick();
+  const [a,b]=f.c.getState().tasks; await f.click('run-toggle'); await f.c.tick(); f.course('a',true); let pauses=0; f.w.document.querySelector('video').pause=()=>{pauses++;}; await f.c.tick();
   const route=f.w.location.hash; const target=f.root.querySelector(`[data-task-id="${a.id}"]`); const handle=f.root.querySelector(`[data-drag-task="${b.id}"]`); assert.ok(target); assert.ok(handle); target.getBoundingClientRect=()=>({top:0,height:20});
   handle.dispatchEvent(new f.w.Event('dragstart',{bubbles:true,cancelable:true})); target.dispatchEvent(new f.w.MouseEvent('drop',{bubbles:true,cancelable:true,clientY:1})); for(let i=0;i<40;i++)await Promise.resolve();
   assert.equal(f.w.location.hash,route); assert.equal(pauses,0); assert.equal(f.c.getState().status,'running'); assert.equal(f.a.read().activeSectionId,'v'); assert.deepEqual(f.c.getState().tasks.map(t=>t.id),[b.id,a.id]);
@@ -192,7 +192,7 @@ test('真实面板和adapter：搜索确认添加两专区，状态预选和手�
   assert.equal(f.c.getState().tasks.length, 2); assert.ok(f.c.getState().tasks.every(item => item.scope === 'all'));
   const firstId = f.c.getState().tasks[0].id; await f.click(`detail-${firstId}`);
   await f.change(`[data-task-detail="${firstId}"] [data-course="u"]`, true); await f.change(`[data-task-detail="${firstId}"] [data-course="u"]`, false);
-  const start = f.root.querySelector('[name="start"]'); start.value = '10:00'; start.dispatchEvent(new f.w.Event('input')); await f.click('start'); assert.deepEqual(f.c.getState().window, { start: '10:00', end: '24:00' });
+  const start = f.root.querySelector('[name="start"]'); start.value = '10:00'; start.dispatchEvent(new f.w.Event('input')); await f.click('run-toggle'); assert.deepEqual(f.c.getState().window, { start: '10:00', end: '24:00' });
   assert.equal(f.c.getState().status, 'running'); await f.c.tick(); assert.match(f.w.location.hash, /subject-course\/b\/6\/s$/u);
   f.course('b', true); await f.c.tick(); assert.equal(f.c.getState().currentSectionTitle, 'v'); assert.match(f.root.querySelector('[data-course="b"]').closest('label').textContent, /课节 · v/u);
   f.complete('v'); await f.c.tick(); await f.elapse(6000); assert.equal(f.a.read().activeSectionId, 'doc'); await f.c.tick();
@@ -213,8 +213,8 @@ test('真实adapter：已完成卡片手工选择后仍检查video→图文→�
 test('真实面板：编辑焦点和脏名称保留、重复诊断、收起后暂停仍退出当前页', async () => {
   const f = setup(); f.panel.open(); await f.click('add'); const target = f.root.querySelector('[name="target"]'); target.focus(); target.value = '编辑中'; target.dispatchEvent(new f.w.Event('input'));
   await f.click('diagnose'); await f.click('diagnose'); assert.equal(target.value, '编辑中'); assert.equal(f.root.activeElement, target); assert.equal(f.root.querySelector('[data-action="diagnose"]').disabled, false);
-  await f.click('back'); await f.collect(); await f.click('start'); await f.c.tick(); f.course('c'); await f.click('toggle'); assert.equal(f.root.querySelector('.body').hidden, true); await f.click('run-toggle'); assert.equal(f.c.getState().status, 'paused'); assert.equal(f.w.location.hash, '#/study/subject/detail/s');
-  f.w.location.hash = '#/study/course/detail/subject-course/c/6/s'; f.course('c'); await f.click('toggle'); await f.click('stop-learning'); assert.equal(f.w.location.hash, '#/study/subject/detail/s'); f.close();
+  await f.click('back'); await f.collect(); await f.click('run-toggle'); await f.c.tick(); f.course('c'); await f.click('toggle'); assert.equal(f.root.querySelector('.body').hidden, true); await f.click('run-toggle'); assert.equal(f.c.getState().status, 'paused'); assert.equal(f.w.location.hash, '#/study/subject/detail/s');
+  f.w.location.hash = '#/study/course/detail/subject-course/c/6/s'; f.course('c'); await f.click('toggle'); assert.equal(f.root.querySelector('[data-action="stop-learning"]').hidden, false); await f.click('stop-learning'); assert.equal(f.w.location.hash, '#/study/subject/detail/s'); f.close();
 });
 
 test('真实adapter：状态/播放器加载超时必须退出学习页，面板问题可重试或跳过继续且不误报全完成', async () => {
@@ -228,9 +228,9 @@ test('真实adapter：状态/播放器加载超时必须退出学习页，面板
     const oldCourseRoute = '#/study/course/detail/subject-course/c/6/s';
     f.w.location.hash = oldCourseRoute; f.course('c', true); let pauses = 0; f.w.document.querySelector('video').pause = () => { pauses += 1; };
     assert.equal(f.c.getState().currentCourseId, mode === 'status' ? 'c' : 'd');
-    f.panel.open(); await f.click('stop-learning');
-    if (mode === 'status') { assert.equal(f.w.location.hash, '#/study/subject/detail/s'); assert.ok(pauses > 0, '当前课程的媒体应停止'); }
-    else { assert.equal(f.w.location.hash, oldCourseRoute, '旧课程不是当前任务执行页，暂停不得跳走'); assert.equal(pauses, 0, '不得触碰旧课程媒体'); }
+    f.panel.open();
+    if (mode === 'status') { assert.equal(f.root.querySelector('[data-action="stop-learning"]').hidden, false); await f.click('stop-learning'); assert.equal(f.w.location.hash, '#/study/subject/detail/s'); assert.ok(pauses > 0, '当前课程的媒体应停止'); }
+    else { assert.equal(f.root.querySelector('[data-action="stop-learning"]').hidden, true); await f.c.pause(); assert.equal(f.w.location.hash, oldCourseRoute, '旧课程不是当前任务执行页，暂停不得跳走'); assert.equal(pauses, 0, '不得触碰旧课程媒体'); }
     f.close();
   }
 });
@@ -246,9 +246,10 @@ test('考试自动暂停后，展开停止入口仅退出当前归属页，不�
     if (!owned) { f.w.location.hash = route; f.course(courseId); }
     const media = f.w.document.createElement('video'); let pauses = 0; media.pause = () => { pauses += 1; }; f.w.document.body.append(media);
     assert.equal(f.root.querySelector('.body').hidden, true); assert.equal(f.root.querySelector('header [data-action="run-toggle"]').textContent, '继续');
-    await f.click('toggle'); assert.equal(f.root.querySelector('[data-action="stop-learning"]').disabled, false); await f.click('stop-learning');
-    if (owned) { assert.equal(f.w.location.hash, '#/study/subject/detail/s'); assert.ok(pauses > 0, '当前考试页人工暂停应停止媒体并退出'); }
-    else { assert.equal(f.w.location.hash, route); assert.equal(pauses, 0, '其他课程或专区的媒体不属于当前执行页'); }
+    await f.click('toggle');
+    const leaveBtn = f.root.querySelector('[data-action="stop-learning"]');
+    if (owned) { assert.equal(leaveBtn.hidden, false); assert.equal(leaveBtn.disabled, false); await f.click('stop-learning'); assert.equal(f.w.location.hash, '#/study/subject/detail/s'); assert.ok(pauses > 0, '当前考试页人工暂停应停止媒体并退出'); }
+    else { assert.equal(leaveBtn.hidden, true); assert.equal(leaveBtn.disabled, true); await f.c.pause(); assert.equal(f.w.location.hash, route); assert.equal(pauses, 0, '其他课程或专区的媒体不属于当前执行页'); }
     assert.equal(f.c.getState().status, 'paused'); f.close();
   }
 });
@@ -264,7 +265,7 @@ test('收起面板可直接开始、暂停和继续，队列完成后按钮禁�
 test('自动模式通过实际面板开启：考试暂存→下一门完成→详情保留原因，互斥错误不抢占', async () => {
   const f=setup(); await f.collect();
   const automatic=f.root.querySelector('[name="automatic"]'); automatic.checked=true; automatic.dispatchEvent(new f.w.Event('change')); for(let i=0;i<40;i++) await Promise.resolve();
-  assert.equal(f.c.getState().automation.enabled,true); await f.click('start'); await f.c.tick(); f.course('c'); f.w.document.querySelector('dl').dataset.sectionType='9'; await f.c.tick();
+  assert.equal(f.c.getState().automation.enabled,true); await f.click('run-toggle'); await f.c.tick(); f.course('c'); f.w.document.querySelector('dl').dataset.sectionType='9'; await f.c.tick();
   assert.match(f.w.location.hash,/subject-course\/d\/6\/s$/u); assert.equal(f.c.getState().tasks[0].deferred[0].courseId,'c');
   f.course('d'); f.complete('doc'); await f.c.tick(); await f.c.tick(); assert.equal(f.c.getState().status,'paused'); assert.match(f.c.getState().message,/待处理/u);
   const task=f.c.getState().tasks[0]; await f.click(`detail-${task.id}`); assert.match(f.root.querySelector(`[data-task-detail="${task.id}"]`).textContent,/待处理.*人工/u);

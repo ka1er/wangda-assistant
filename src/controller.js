@@ -9,44 +9,44 @@ const wdControllerEndedConfirmTimeout = 90000;
 function wdControllerDescribeRecognitionFailure(page, { stage = 'subject', expectedSubject = null, timedOut = false } = {}) {
   const prefix = timedOut ? '加载超时' : '识别失败';
   if (!page || page.kind === 'unknown') {
-    const basis = page?.recognition?.basis || '路由未匹配已知专题/课程/搜索规则（需 #/study/subject/detail/<SID>、#/study/course/detail/... 或 #/search）';
+    const basis = page?.recognition?.basis || '路由未匹配已知专区/课程/搜索规则（需 #/study/subject/detail/<SID>、#/study/course/detail/... 或 #/search）';
     return `${prefix}（不支持的结构）：当前页面路由无法识别。依据：${basis}。请点击“页面诊断”核对。`;
   }
   if (stage === 'search-page' || stage === 'results') {
     if (page.kind !== 'search') {
-      return `${prefix}（页面未就绪）：尚未处于专题搜索页（当前类型：${page.kind}，需 #/search）。请手动打开专题后读取，或点击“页面诊断”核对。`;
+      return `${prefix}（页面未就绪）：尚未处于专区搜索页（当前类型：${page.kind}，需 #/search）。请手动打开专区后读取，或点击“页面诊断”核对。`;
     }
     const rec = page.recognition;
-    if (rec?.category === 'zero-results') return `${timedOut ? '搜索结束' : '识别失败'}（零结果）：未找到匹配专题候选。依据：${rec.basis}。请核对关键词或手动打开专题后读取，可点击“页面诊断”核对。`;
+    if (rec?.category === 'zero-results') return `${timedOut ? '搜索结束' : '识别失败'}（零结果）：未找到匹配专区候选。依据：${rec.basis}。请核对关键词或手动打开专区后读取，可点击“页面诊断”核对。`;
     if (rec?.category === 'unsupported-structure') return `搜索识别失败（不支持的结构）：页面搜索结果结构暂不支持。依据：${rec.basis}。请点击“页面诊断”核对。`;
     const basis = rec?.basis || (stage === 'search-page'
       ? '未找到搜索控件（input[id$="searchContent"][name="keyword"] / input[name="searchContent"] 与 i[id$="searchBtn"]）'
       : '尚未出现搜索结果容器（[id$="all-list"]）或结果仍在加载');
-    return `${prefix}（页面未就绪）：搜索页面或结果尚未就绪。依据：${basis}。请稍后重试或手动打开专题后读取，可点击“页面诊断”核对。`;
+    return `${prefix}（页面未就绪）：搜索页面或结果尚未就绪。依据：${basis}。请稍后重试或手动打开专区后读取，可点击“页面诊断”核对。`;
   }
   if (page.kind !== 'subject') {
-    return `${prefix}（页面未就绪）：当前不在专题详情页（当前类型：${page.kind}，需 #/study/subject/detail/<SID>）。请进入对应专题页后读取，可点击“页面诊断”核对。`;
+    return `${prefix}（页面未就绪）：当前不在专区详情页（当前类型：${page.kind}，需 #/study/subject/detail/<SID>）。请进入对应专区页后读取，可点击“页面诊断”核对。`;
   }
   if (expectedSubject && page.subjectId !== expectedSubject.id) {
-    return `${prefix}（页面未就绪）：当前专题标识与目标专题不一致（需匹配目标专题 SID）。请核对专区后重试，可点击“页面诊断”核对。`;
+    return `${prefix}（页面未就绪）：当前专区标识与目标专区不一致（需匹配目标专区 SID）。请核对专区后重试，可点击“页面诊断”核对。`;
   }
   if (page.courses?.length) {
     if (!page.title?.trim()) {
-      return '未识别当前专题标题（页面未就绪），已暂停。依据：未从 .subject-banner/.banner-info .title-row .h3、introduce .h3 或 document.title 读到标题。请查看页面诊断后重试读取。';
+      return '未识别当前专区标题（页面未就绪），已暂停。依据：未从 .subject-banner/.banner-info .title-row .h3、introduce .h3 或 document.title 读到标题。请查看页面诊断后重试读取。';
     }
     if (expectedSubject && normalizeTitle(page.title) !== normalizeTitle(expectedSubject.title)) {
-      return '当前专题标题与所选结果不一致，已暂停。依据：专题标题规范化比对不匹配。请核对专区后重试。';
+      return '当前专区标题与所选结果不一致，已暂停。依据：专区标题规范化比对不匹配。请核对专区后重试。';
     }
   }
   const rec = page.recognition;
   if (rec?.category === 'zero-results') {
-    return `${prefix}（零结果）：当前专题未读取到可执行课程。依据：${rec.basis}。请点击“页面诊断”核对。`;
+    return `${prefix}（零结果）：当前专区未读取到可执行课程。依据：${rec.basis}。请点击“页面诊断”核对。`;
   }
   if (rec?.category === 'unsupported-structure') {
-    return `${prefix}（不支持的结构）：当前专题页面结构暂不支持。依据：${rec.basis}。请点击“页面诊断”查看详情。`;
+    return `${prefix}（不支持的结构）：当前专区页面结构暂不支持。依据：${rec.basis}。请点击“页面诊断”查看详情。`;
   }
-  const basis = rec?.basis || '尚未检测到可用专题课程列表（检查 .catalog-state-info2、.catalog-state-info 或 .content.new [id*="studyBtn"]）';
-  return `${prefix}（页面未就绪）：专题标题或课程列表尚未加载完成。依据：${basis}。请等待加载完成后重试，或点击“页面诊断”核对。`;
+  const basis = rec?.basis || '尚未检测到可用专区课程列表（检查 .catalog-state-info2、.catalog-state-info 或 .content.new [id*="studyBtn"]）';
+  return `${prefix}（页面未就绪）：专区标题或课程列表尚未加载完成。依据：${basis}。请等待加载完成后重试，或点击“页面诊断”核对。`;
 }
 
 export function createController(options) {
@@ -101,11 +101,21 @@ export function createController(options) {
   const listeners = new Set();
   const copy = value => JSON.parse(JSON.stringify(value));
   const isDone = (item, id) => Boolean(item?.done?.includes(id) && !item.recheck?.includes(id));
-  const getState = () => ({ status, phase: restorePending ? 'resuming' : recovery?.network ? 'offline' : recovery ? 'retrying' : confirmWait ? 'confirming' : status, message, unavailable: blocked, window: copy(record?.window || defaultWindow), automation: copy(record?.automation || defaultAutomation), tasks: copy(record?.tasks || []), activeTaskId: record?.activeTaskId || null, currentCourseId: task?.current || null, currentSectionTitle, currentPlayback: copy(currentPlayback), candidates: copy(candidates), draft: copy(draft), problem: copy(problem) });
+  const isOnOwnedLearningPage = () => {
+    if (destroyed || !task?.current || !task?.subject || record?.activeTaskId !== task.id) return false;
+    if (typeof adapter?.read !== 'function') return false;
+    try {
+      const page = adapter.read();
+      return page.kind === 'course' && task.current === page.courseId && task.subject.id === page.subjectId && task.courses.some(course => course.id === page.courseId && course.route === page.route);
+    } catch {
+      return Boolean(lastOwnedPage && lastOwnedPage.taskId === task.id && lastOwnedPage.courseId === task.current);
+    }
+  };
+  const getState = () => ({ status, phase: restorePending ? 'resuming' : recovery?.network ? 'offline' : recovery ? 'retrying' : confirmWait ? 'confirming' : status, message, unavailable: blocked, onOwnedLearningPage: isOnOwnedLearningPage(), window: copy(record?.window || defaultWindow), automation: copy(record?.automation || defaultAutomation), tasks: copy(record?.tasks || []), activeTaskId: record?.activeTaskId || null, currentCourseId: task?.current || null, currentSectionTitle, currentPlayback: copy(currentPlayback), candidates: copy(candidates), draft: copy(draft), problem: copy(problem) });
   const emit = () => { const state = getState(); for (const listener of listeners) listener(state); };
   const tell = text => { message = text; emit(); return false; };
   const milliseconds = () => now().getTime();
-  const notify = text => { try { options.notify?.(`网大助手：${text}`); } catch { /* Notifications are optional. */ } };
+  const notify = text => { try { options.notify?.(text); } catch { /* Notifications are optional. */ } };
   const readStored = () => {
     if (!storage || typeof storage.get !== 'function' || typeof storage.set !== 'function') throw Error('存储不可用，无法安全保存任务。');
     const value = storage.get(wdControllerTaskKey);
@@ -236,7 +246,7 @@ export function createController(options) {
       if (!existing) return false;
       existing.courses = mergeCourses(existing.courses, page.courses, existing.selectionMode);
       if (!persist()) return false;
-      message = '课程清单已刷新，勾选和学习记录已保留。' + (nextEntry() ? pendingNotice : ''); emit(); return true;
+      message = '课程清单已刷新。' + (nextEntry() ? pendingNotice : ''); emit(); return true;
     }
     candidates = [];
     draft = { target: target || page.title, selectionMode: 'all-pending', subject: { id: page.subjectId, title: page.title, route: page.route }, courses: mergeCourses([], page.courses) };
@@ -260,10 +270,10 @@ export function createController(options) {
   const discardDraft = () => { if (!editable()) return false; draft = null; candidates = []; target = ''; emit(); return true; };
   const addDraft = async () => edit(() => {
     if (!draft) return tell('请先读取待添加清单。');
-    if (record?.tasks.some(item => item.subject?.id === draft.subject.id)) return tell('该专题已在任务队列中，请刷新已有清单。');
+    if (record?.tasks.some(item => item.subject?.id === draft.subject.id)) return tell('该专区已在任务队列中，请刷新已有清单。');
     ensureRecord(); const next = { id: unique(), ...copy(draft), scope: 'all', done: [], skipped: [], current: null };
     record.tasks.push(next); if (!record.activeTaskId) record.activeTaskId = next.id;
-    if (!persist()) return false; draft = null; candidates = []; target = ''; message = '专题已加入队列，可继续添加其他专题。' + (nextEntry() ? pendingNotice : ''); emit(); return true;
+    if (!persist()) return false; draft = null; candidates = []; target = ''; message = '专区已加入队列。' + (nextEntry() ? pendingNotice : ''); emit(); return true;
   });
   const setSelection = async (taskId, id, selected) => edit(() => {
     const item = record?.tasks.find(item => item.id === taskId)?.courses.find(course => course.id === id); if (!item) return false;
@@ -289,7 +299,7 @@ export function createController(options) {
     item.recheck = [...new Set([...(item.recheck || []), ...ids])];
     item.skipped = item.skipped.filter(id => !ids.includes(id)); item.deferred = (item.deferred || []).filter(entry => !ids.includes(entry.courseId));
     if (!persist()) return false;
-    message = `已安排 ${ids.length} 门课程复查，请点击开始；将核对课节状态，只学习未完成内容。`; emit(); return true;
+    message = `已安排 ${ids.length} 门课程复查。`; emit(); return true;
   });
   const removeTask = async taskId => edit(() => {
     if (!record?.tasks.some(item => item.id === taskId)) return false;
@@ -334,13 +344,13 @@ export function createController(options) {
     return edit(() => { ensureRecord(); record.automation = { enabled: value.enabled, resumeOnReload: value.enabled && value.resumeOnReload, mute: value.mute ?? record.automation?.mute ?? true }; record.runRequested = false; return persist(); });
   };
   const prepareSubject = (candidate, refreshId = null) => {
-    status = 'preparing'; preparing = { stage: 'subject', candidate, refreshId, since: milliseconds() }; message = '正在打开专题，请等待课程加载。'; watch(); emit();
-    if (!adapter.openSubject(candidate)) { stop('无法打开专题，请手动打开后读取。'); return false; } return true;
+    status = 'preparing'; preparing = { stage: 'subject', candidate, refreshId, since: milliseconds() }; message = '正在打开专区，请等待课程加载。'; watch(); emit();
+    if (!adapter.openSubject(candidate)) { stop('无法打开专区，请手动打开后读取。'); return false; } return true;
   };
   const subjectTitleIssue = page => {
     if (preparing?.stage !== 'subject' || page.kind !== 'subject' || page.subjectId !== preparing.candidate.id || !page.courses?.length) return '';
-    if (!page.title?.trim()) return '未识别当前专题标题（页面未就绪），已暂停。依据：未从 .subject-banner/.banner-info .title-row .h3、introduce .h3 或 document.title 读到标题。请查看页面诊断后重试读取。';
-    if (normalizeTitle(page.title) !== normalizeTitle(preparing.candidate.title)) return '当前专题标题与所选结果不一致，已暂停。依据：专题标题规范化比对不匹配。请核对专区后重试。';
+    if (!page.title?.trim()) return '未识别当前专区标题（页面未就绪），已暂停。依据：未从 .subject-banner/.banner-info .title-row .h3、introduce .h3 或 document.title 读到标题。请查看页面诊断后重试读取。';
+    if (normalizeTitle(page.title) !== normalizeTitle(preparing.candidate.title)) return '当前专区标题与所选结果不一致，已暂停。依据：专区标题规范化比对不匹配。请核对专区后重试。';
     return '';
   };
   const refreshTask = async taskId => {
@@ -352,7 +362,7 @@ export function createController(options) {
   const search = async value => {
     if (!editable() || typeof value !== 'string' || !value.trim()) return tell('请先暂停并填写专区名称。');
     const token = generation; if (!await acquire() || token !== generation || !held || !verify()) return false;
-    target = value.trim(); draft = null; status = 'preparing'; candidates = []; preparing = { stage: 'search-page', since: milliseconds() }; message = '正在打开专题搜索。'; watch(); emit();
+    target = value.trim(); draft = null; status = 'preparing'; candidates = []; preparing = { stage: 'search-page', since: milliseconds() }; message = '正在打开专区搜索。'; watch(); emit();
     if (!adapter.goSearch()) { stop('无法进入搜索页，请手动进入后重试。'); return false; } return true;
   };
   const chooseCandidate = async id => {
@@ -392,7 +402,7 @@ export function createController(options) {
     } catch { /* Polling still applies muting if media events cannot be watched. */ }
   };
   const start = async (preferred = null) => {
-    if (!editable() || !record || !record.tasks.length) return tell('请先添加专题任务。');
+    if (!editable() || !record || !record.tasks.length) return tell('请先添加专区任务。');
     if (!isWithinWindow(now(), record.window) && !record.automation.enabled) return tell('当前不在允许的北京时间学习时段内。');
     const preferredTask = preferred && record.tasks.find(item => item.id === preferred.taskId);
     const preferredCourse = queue(preferredTask).find(course => course.id === preferred.courseId && course.selected && !isDone(preferredTask, course.id) && !preferredTask.skipped.includes(course.id) && !preferredTask.deferred?.some(entry => entry.courseId === course.id));
@@ -580,8 +590,8 @@ export function createController(options) {
           const exact = candidates.filter(item => normalizeTitle(item.title) === normalizeTitle(target));
           if (exact.length === 1) {
             preparing = { stage: 'subject', candidate: exact[0], since: milliseconds() };
-            if (!adapter.openSubject(exact[0])) stop('无法打开专题，请手动打开后读取。');
-          } else stop('请点击确认要学习的专题。');
+            if (!adapter.openSubject(exact[0])) stop('无法打开专区，请手动打开后读取。');
+          } else stop('请点击确认要学习的专区。');
           emit();
         } else if (preparing.stage === 'subject' && page.kind === 'subject' && page.subjectId === preparing.candidate.id && page.title && normalizeTitle(page.title) === normalizeTitle(preparing.candidate.title) && page.courses?.length) {
           if (collectPage(page, preparing.refreshId)) stop(message);

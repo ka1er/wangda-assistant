@@ -1069,44 +1069,44 @@ const wdControllerEndedConfirmTimeout = 90000;
 function wdControllerDescribeRecognitionFailure(page, { stage = 'subject', expectedSubject = null, timedOut = false } = {}) {
   const prefix = timedOut ? '加载超时' : '识别失败';
   if (!page || page.kind === 'unknown') {
-    const basis = page?.recognition?.basis || '路由未匹配已知专题/课程/搜索规则（需 #/study/subject/detail/<SID>、#/study/course/detail/... 或 #/search）';
+    const basis = page?.recognition?.basis || '路由未匹配已知专区/课程/搜索规则（需 #/study/subject/detail/<SID>、#/study/course/detail/... 或 #/search）';
     return `${prefix}（不支持的结构）：当前页面路由无法识别。依据：${basis}。请点击“页面诊断”核对。`;
   }
   if (stage === 'search-page' || stage === 'results') {
     if (page.kind !== 'search') {
-      return `${prefix}（页面未就绪）：尚未处于专题搜索页（当前类型：${page.kind}，需 #/search）。请手动打开专题后读取，或点击“页面诊断”核对。`;
+      return `${prefix}（页面未就绪）：尚未处于专区搜索页（当前类型：${page.kind}，需 #/search）。请手动打开专区后读取，或点击“页面诊断”核对。`;
     }
     const rec = page.recognition;
-    if (rec?.category === 'zero-results') return `${timedOut ? '搜索结束' : '识别失败'}（零结果）：未找到匹配专题候选。依据：${rec.basis}。请核对关键词或手动打开专题后读取，可点击“页面诊断”核对。`;
+    if (rec?.category === 'zero-results') return `${timedOut ? '搜索结束' : '识别失败'}（零结果）：未找到匹配专区候选。依据：${rec.basis}。请核对关键词或手动打开专区后读取，可点击“页面诊断”核对。`;
     if (rec?.category === 'unsupported-structure') return `搜索识别失败（不支持的结构）：页面搜索结果结构暂不支持。依据：${rec.basis}。请点击“页面诊断”核对。`;
     const basis = rec?.basis || (stage === 'search-page'
       ? '未找到搜索控件（input[id$="searchContent"][name="keyword"] / input[name="searchContent"] 与 i[id$="searchBtn"]）'
       : '尚未出现搜索结果容器（[id$="all-list"]）或结果仍在加载');
-    return `${prefix}（页面未就绪）：搜索页面或结果尚未就绪。依据：${basis}。请稍后重试或手动打开专题后读取，可点击“页面诊断”核对。`;
+    return `${prefix}（页面未就绪）：搜索页面或结果尚未就绪。依据：${basis}。请稍后重试或手动打开专区后读取，可点击“页面诊断”核对。`;
   }
   if (page.kind !== 'subject') {
-    return `${prefix}（页面未就绪）：当前不在专题详情页（当前类型：${page.kind}，需 #/study/subject/detail/<SID>）。请进入对应专题页后读取，可点击“页面诊断”核对。`;
+    return `${prefix}（页面未就绪）：当前不在专区详情页（当前类型：${page.kind}，需 #/study/subject/detail/<SID>）。请进入对应专区页后读取，可点击“页面诊断”核对。`;
   }
   if (expectedSubject && page.subjectId !== expectedSubject.id) {
-    return `${prefix}（页面未就绪）：当前专题标识与目标专题不一致（需匹配目标专题 SID）。请核对专区后重试，可点击“页面诊断”核对。`;
+    return `${prefix}（页面未就绪）：当前专区标识与目标专区不一致（需匹配目标专区 SID）。请核对专区后重试，可点击“页面诊断”核对。`;
   }
   if (page.courses?.length) {
     if (!page.title?.trim()) {
-      return '未识别当前专题标题（页面未就绪），已暂停。依据：未从 .subject-banner/.banner-info .title-row .h3、introduce .h3 或 document.title 读到标题。请查看页面诊断后重试读取。';
+      return '未识别当前专区标题（页面未就绪），已暂停。依据：未从 .subject-banner/.banner-info .title-row .h3、introduce .h3 或 document.title 读到标题。请查看页面诊断后重试读取。';
     }
     if (expectedSubject && normalizeTitle(page.title) !== normalizeTitle(expectedSubject.title)) {
-      return '当前专题标题与所选结果不一致，已暂停。依据：专题标题规范化比对不匹配。请核对专区后重试。';
+      return '当前专区标题与所选结果不一致，已暂停。依据：专区标题规范化比对不匹配。请核对专区后重试。';
     }
   }
   const rec = page.recognition;
   if (rec?.category === 'zero-results') {
-    return `${prefix}（零结果）：当前专题未读取到可执行课程。依据：${rec.basis}。请点击“页面诊断”核对。`;
+    return `${prefix}（零结果）：当前专区未读取到可执行课程。依据：${rec.basis}。请点击“页面诊断”核对。`;
   }
   if (rec?.category === 'unsupported-structure') {
-    return `${prefix}（不支持的结构）：当前专题页面结构暂不支持。依据：${rec.basis}。请点击“页面诊断”查看详情。`;
+    return `${prefix}（不支持的结构）：当前专区页面结构暂不支持。依据：${rec.basis}。请点击“页面诊断”查看详情。`;
   }
-  const basis = rec?.basis || '尚未检测到可用专题课程列表（检查 .catalog-state-info2、.catalog-state-info 或 .content.new [id*="studyBtn"]）';
-  return `${prefix}（页面未就绪）：专题标题或课程列表尚未加载完成。依据：${basis}。请等待加载完成后重试，或点击“页面诊断”核对。`;
+  const basis = rec?.basis || '尚未检测到可用专区课程列表（检查 .catalog-state-info2、.catalog-state-info 或 .content.new [id*="studyBtn"]）';
+  return `${prefix}（页面未就绪）：专区标题或课程列表尚未加载完成。依据：${basis}。请等待加载完成后重试，或点击“页面诊断”核对。`;
 }
 
 function createController(options) {
@@ -1161,11 +1161,21 @@ function createController(options) {
   const listeners = new Set();
   const copy = value => JSON.parse(JSON.stringify(value));
   const isDone = (item, id) => Boolean(item?.done?.includes(id) && !item.recheck?.includes(id));
-  const getState = () => ({ status, phase: restorePending ? 'resuming' : recovery?.network ? 'offline' : recovery ? 'retrying' : confirmWait ? 'confirming' : status, message, unavailable: blocked, window: copy(record?.window || defaultWindow), automation: copy(record?.automation || defaultAutomation), tasks: copy(record?.tasks || []), activeTaskId: record?.activeTaskId || null, currentCourseId: task?.current || null, currentSectionTitle, currentPlayback: copy(currentPlayback), candidates: copy(candidates), draft: copy(draft), problem: copy(problem) });
+  const isOnOwnedLearningPage = () => {
+    if (destroyed || !task?.current || !task?.subject || record?.activeTaskId !== task.id) return false;
+    if (typeof adapter?.read !== 'function') return false;
+    try {
+      const page = adapter.read();
+      return page.kind === 'course' && task.current === page.courseId && task.subject.id === page.subjectId && task.courses.some(course => course.id === page.courseId && course.route === page.route);
+    } catch {
+      return Boolean(lastOwnedPage && lastOwnedPage.taskId === task.id && lastOwnedPage.courseId === task.current);
+    }
+  };
+  const getState = () => ({ status, phase: restorePending ? 'resuming' : recovery?.network ? 'offline' : recovery ? 'retrying' : confirmWait ? 'confirming' : status, message, unavailable: blocked, onOwnedLearningPage: isOnOwnedLearningPage(), window: copy(record?.window || defaultWindow), automation: copy(record?.automation || defaultAutomation), tasks: copy(record?.tasks || []), activeTaskId: record?.activeTaskId || null, currentCourseId: task?.current || null, currentSectionTitle, currentPlayback: copy(currentPlayback), candidates: copy(candidates), draft: copy(draft), problem: copy(problem) });
   const emit = () => { const state = getState(); for (const listener of listeners) listener(state); };
   const tell = text => { message = text; emit(); return false; };
   const milliseconds = () => now().getTime();
-  const notify = text => { try { options.notify?.(`网大助手：${text}`); } catch { /* Notifications are optional. */ } };
+  const notify = text => { try { options.notify?.(text); } catch { /* Notifications are optional. */ } };
   const readStored = () => {
     if (!storage || typeof storage.get !== 'function' || typeof storage.set !== 'function') throw Error('存储不可用，无法安全保存任务。');
     const value = storage.get(wdControllerTaskKey);
@@ -1296,7 +1306,7 @@ function createController(options) {
       if (!existing) return false;
       existing.courses = mergeCourses(existing.courses, page.courses, existing.selectionMode);
       if (!persist()) return false;
-      message = '课程清单已刷新，勾选和学习记录已保留。' + (nextEntry() ? pendingNotice : ''); emit(); return true;
+      message = '课程清单已刷新。' + (nextEntry() ? pendingNotice : ''); emit(); return true;
     }
     candidates = [];
     draft = { target: target || page.title, selectionMode: 'all-pending', subject: { id: page.subjectId, title: page.title, route: page.route }, courses: mergeCourses([], page.courses) };
@@ -1320,10 +1330,10 @@ function createController(options) {
   const discardDraft = () => { if (!editable()) return false; draft = null; candidates = []; target = ''; emit(); return true; };
   const addDraft = async () => edit(() => {
     if (!draft) return tell('请先读取待添加清单。');
-    if (record?.tasks.some(item => item.subject?.id === draft.subject.id)) return tell('该专题已在任务队列中，请刷新已有清单。');
+    if (record?.tasks.some(item => item.subject?.id === draft.subject.id)) return tell('该专区已在任务队列中，请刷新已有清单。');
     ensureRecord(); const next = { id: unique(), ...copy(draft), scope: 'all', done: [], skipped: [], current: null };
     record.tasks.push(next); if (!record.activeTaskId) record.activeTaskId = next.id;
-    if (!persist()) return false; draft = null; candidates = []; target = ''; message = '专题已加入队列，可继续添加其他专题。' + (nextEntry() ? pendingNotice : ''); emit(); return true;
+    if (!persist()) return false; draft = null; candidates = []; target = ''; message = '专区已加入队列。' + (nextEntry() ? pendingNotice : ''); emit(); return true;
   });
   const setSelection = async (taskId, id, selected) => edit(() => {
     const item = record?.tasks.find(item => item.id === taskId)?.courses.find(course => course.id === id); if (!item) return false;
@@ -1349,7 +1359,7 @@ function createController(options) {
     item.recheck = [...new Set([...(item.recheck || []), ...ids])];
     item.skipped = item.skipped.filter(id => !ids.includes(id)); item.deferred = (item.deferred || []).filter(entry => !ids.includes(entry.courseId));
     if (!persist()) return false;
-    message = `已安排 ${ids.length} 门课程复查，请点击开始；将核对课节状态，只学习未完成内容。`; emit(); return true;
+    message = `已安排 ${ids.length} 门课程复查。`; emit(); return true;
   });
   const removeTask = async taskId => edit(() => {
     if (!record?.tasks.some(item => item.id === taskId)) return false;
@@ -1394,13 +1404,13 @@ function createController(options) {
     return edit(() => { ensureRecord(); record.automation = { enabled: value.enabled, resumeOnReload: value.enabled && value.resumeOnReload, mute: value.mute ?? record.automation?.mute ?? true }; record.runRequested = false; return persist(); });
   };
   const prepareSubject = (candidate, refreshId = null) => {
-    status = 'preparing'; preparing = { stage: 'subject', candidate, refreshId, since: milliseconds() }; message = '正在打开专题，请等待课程加载。'; watch(); emit();
-    if (!adapter.openSubject(candidate)) { stop('无法打开专题，请手动打开后读取。'); return false; } return true;
+    status = 'preparing'; preparing = { stage: 'subject', candidate, refreshId, since: milliseconds() }; message = '正在打开专区，请等待课程加载。'; watch(); emit();
+    if (!adapter.openSubject(candidate)) { stop('无法打开专区，请手动打开后读取。'); return false; } return true;
   };
   const subjectTitleIssue = page => {
     if (preparing?.stage !== 'subject' || page.kind !== 'subject' || page.subjectId !== preparing.candidate.id || !page.courses?.length) return '';
-    if (!page.title?.trim()) return '未识别当前专题标题（页面未就绪），已暂停。依据：未从 .subject-banner/.banner-info .title-row .h3、introduce .h3 或 document.title 读到标题。请查看页面诊断后重试读取。';
-    if (normalizeTitle(page.title) !== normalizeTitle(preparing.candidate.title)) return '当前专题标题与所选结果不一致，已暂停。依据：专题标题规范化比对不匹配。请核对专区后重试。';
+    if (!page.title?.trim()) return '未识别当前专区标题（页面未就绪），已暂停。依据：未从 .subject-banner/.banner-info .title-row .h3、introduce .h3 或 document.title 读到标题。请查看页面诊断后重试读取。';
+    if (normalizeTitle(page.title) !== normalizeTitle(preparing.candidate.title)) return '当前专区标题与所选结果不一致，已暂停。依据：专区标题规范化比对不匹配。请核对专区后重试。';
     return '';
   };
   const refreshTask = async taskId => {
@@ -1412,7 +1422,7 @@ function createController(options) {
   const search = async value => {
     if (!editable() || typeof value !== 'string' || !value.trim()) return tell('请先暂停并填写专区名称。');
     const token = generation; if (!await acquire() || token !== generation || !held || !verify()) return false;
-    target = value.trim(); draft = null; status = 'preparing'; candidates = []; preparing = { stage: 'search-page', since: milliseconds() }; message = '正在打开专题搜索。'; watch(); emit();
+    target = value.trim(); draft = null; status = 'preparing'; candidates = []; preparing = { stage: 'search-page', since: milliseconds() }; message = '正在打开专区搜索。'; watch(); emit();
     if (!adapter.goSearch()) { stop('无法进入搜索页，请手动进入后重试。'); return false; } return true;
   };
   const chooseCandidate = async id => {
@@ -1452,7 +1462,7 @@ function createController(options) {
     } catch { /* Polling still applies muting if media events cannot be watched. */ }
   };
   const start = async (preferred = null) => {
-    if (!editable() || !record || !record.tasks.length) return tell('请先添加专题任务。');
+    if (!editable() || !record || !record.tasks.length) return tell('请先添加专区任务。');
     if (!isWithinWindow(now(), record.window) && !record.automation.enabled) return tell('当前不在允许的北京时间学习时段内。');
     const preferredTask = preferred && record.tasks.find(item => item.id === preferred.taskId);
     const preferredCourse = queue(preferredTask).find(course => course.id === preferred.courseId && course.selected && !isDone(preferredTask, course.id) && !preferredTask.skipped.includes(course.id) && !preferredTask.deferred?.some(entry => entry.courseId === course.id));
@@ -1640,8 +1650,8 @@ function createController(options) {
           const exact = candidates.filter(item => normalizeTitle(item.title) === normalizeTitle(target));
           if (exact.length === 1) {
             preparing = { stage: 'subject', candidate: exact[0], since: milliseconds() };
-            if (!adapter.openSubject(exact[0])) stop('无法打开专题，请手动打开后读取。');
-          } else stop('请点击确认要学习的专题。');
+            if (!adapter.openSubject(exact[0])) stop('无法打开专区，请手动打开后读取。');
+          } else stop('请点击确认要学习的专区。');
           emit();
         } else if (preparing.stage === 'subject' && page.kind === 'subject' && page.subjectId === preparing.candidate.id && page.title && normalizeTitle(page.title) === normalizeTitle(preparing.candidate.title) && page.courses?.length) {
           if (collectPage(page, preparing.refreshId)) stop(message);
@@ -1898,25 +1908,38 @@ function createPanel(win, controller, version) {
   host.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:2147483646;';
   const root = host.attachShadow({ mode: 'open' });
   const element = (tag, text = '', parent = root) => { const node = document.createElement(tag); node.textContent = text; parent.append(node); return node; };
-  element('style', ':host{all:initial;color:#17344d;font:13px/1.5 system-ui,"Microsoft YaHei",sans-serif}*{box-sizing:border-box}[hidden]{display:none!important}button,input{font:inherit}button{cursor:pointer;border:1px solid #a8c6e6;background:#f5faff;border-radius:5px;padding:5px 9px;color:#155a9b}button:hover{background:#e6f2ff}button:disabled{opacity:.5;cursor:default}button.primary{background:#176ac2;color:#fff;border-color:#176ac2}section{width:380px;max-width:calc(100vw - 32px);background:#fff;border:1px solid #a9c5e1;border-radius:10px;box-shadow:0 5px 28px #12345630;overflow:hidden}header{padding:10px 12px;background:#edf5ff}header strong{font-size:15px}.headline,.buttons,.row{display:flex;align-items:center;gap:7px}.headline{justify-content:space-between}.buttons{flex-wrap:wrap;margin:9px 0}.row{align-items:flex-start}.row label{flex:1;min-width:0}small,.muted{font-size:12px;color:#56748f}.progress{margin-top:7px;font-size:12px}.body{padding:12px;max-height:calc(100dvh - 155px);overflow-y:auto;overscroll-behavior:contain}.status,.problem{padding:9px;background:#eff6fd;white-space:pre-wrap;overflow-wrap:anywhere;border-radius:5px;margin-bottom:10px}.problem{background:#fff6e8;border:1px solid #edc88d}h2{font-size:14px;margin:10px 0}p{margin:6px 0;overflow-wrap:anywhere}label{display:block;margin-bottom:8px}input[type=text]{width:100%;border:1px solid #b8c9d9;border-radius:4px;background:#fff;color:#17344d;padding:6px}input[type=checkbox]{margin:3px 0;flex-shrink:0}input:focus-visible,button:focus-visible,summary:focus-visible{outline:2px solid #176ac2;outline-offset:2px}article{border:1px solid #d2e1ef;border-radius:6px;padding:10px;margin:8px 0}article h3{font-size:13px;margin:0 0 5px;overflow-wrap:anywhere}.course{display:flex;align-items:flex-start;gap:7px;margin:0;padding:7px 0;border-bottom:1px solid #edf2f7}.course:last-child{border-bottom:0}.course span{flex:1;overflow-wrap:anywhere}.course small{display:block}.course button{font-size:12px;padding:2px 5px}details{margin:8px 0}summary{cursor:pointer;color:#155a9b}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:11px/1.5 monospace;margin:6px 0}.candidate{width:100%;text-align:left;overflow-wrap:anywhere;margin:4px 0}.separator{border-top:1px solid #e2ebf3;margin-top:12px;padding-top:3px}');
+  element('style', ':host{all:initial;color:#17344d;font:13px/1.5 system-ui,"Microsoft YaHei",sans-serif}*{box-sizing:border-box}[hidden]{display:none!important}button,input{font:inherit}button{cursor:pointer;border:1px solid #a8c6e6;background:#f5faff;border-radius:5px;padding:5px 9px;min-height:32px;color:#155a9b}button:hover:not(:disabled){background:#e6f2ff}button:disabled{opacity:.5;cursor:default}button.primary{background:#176ac2;color:#fff;border-color:#176ac2}button.primary:hover:not(:disabled){background:#1259a5}button.danger{color:#b42318;border-color:#f0b4ae;background:#fff5f5}button.danger:hover:not(:disabled){background:#ffe8e6;border-color:#e0867e}button.danger-confirm{background:#c92a2a;color:#fff;border-color:#c92a2a}button.danger-confirm:hover:not(:disabled){background:#b02222}button.ghost{background:#fff;border-color:#c6d5e3;color:#4a657e}button.ghost:hover:not(:disabled){background:#f4f7fa}section{width:380px;max-width:calc(100vw - 32px);display:flex;flex-direction:column;max-height:calc(100dvh - 32px);background:#fff;border:1px solid #a9c5e1;border-radius:10px;box-shadow:0 5px 28px #12345630;overflow:hidden}header{flex-shrink:0;padding:10px 12px;background:#edf5ff}header strong{font-size:15px}.headline,.buttons,.row{display:flex;align-items:center;gap:7px}.headline{justify-content:space-between}.buttons{flex-wrap:wrap;margin:8px 0}.detail-actions{justify-content:space-between}.leave-bar{margin:0 0 10px}.row{align-items:flex-start}.row label{flex:1;min-width:0}small,.muted{font-size:12px;color:#56748f}.progress{margin-top:6px;font-size:12px}.body{padding:12px;flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain}.status,.problem,.ui-error{padding:9px;background:#eff6fd;white-space:pre-wrap;overflow-wrap:anywhere;border-radius:5px;margin-bottom:10px}.problem{background:#fff6e8;border:1px solid #edc88d}.ui-error{background:#fff1f0;border:1px solid #f5b5b0;color:#a61d24;display:flex;align-items:flex-start;justify-content:space-between;gap:8px}.ui-error button{min-width:26px;min-height:26px;padding:0 6px;line-height:1;flex-shrink:0}h2{font-size:14px;margin:8px 0}p{margin:6px 0;overflow-wrap:anywhere}label{display:block;margin-bottom:8px}input[type=text]{width:100%;border:1px solid #b8c9d9;border-radius:4px;background:#fff;color:#17344d;padding:6px}input[type=checkbox]{margin:3px 0;flex-shrink:0}input:focus-visible,button:focus-visible,summary:focus-visible,select:focus-visible{outline:2px solid #176ac2;outline-offset:2px}article{border:1px solid #d2e1ef;border-radius:6px;padding:10px;margin:8px 0}article h3{font-size:13px;margin:0 0 5px;overflow-wrap:anywhere}.course{display:flex;align-items:flex-start;gap:7px;margin:0;padding:7px 0;border-bottom:1px solid #edf2f7}.course:last-child{border-bottom:0}.course span{flex:1;overflow-wrap:anywhere}.course small{display:block}.course button{font-size:12px;min-height:28px;padding:3px 8px;flex-shrink:0}details{margin:8px 0}summary{cursor:pointer;color:#155a9b;font-weight:500}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:11px/1.5 monospace;margin:6px 0;padding:8px;background:#f4f7fa;border-radius:5px}.candidate{width:100%;text-align:left;overflow-wrap:anywhere;margin:4px 0}.separator{border-top:1px solid #e2ebf3;margin-top:10px;padding-top:8px}.settings-group{margin:8px 0;padding-top:6px;border-top:1px dashed #e2ebf3}.settings-group:first-of-type{border-top:0;padding-top:0}.settings-title{font-size:12px;font-weight:600;color:#35536e;margin:0 0 6px}.diag-bar{display:flex;align-items:center;justify-content:space-between;gap:7px;margin-top:8px}.diag-actions{display:flex;gap:6px}.diag-actions button{min-height:28px;padding:3px 8px;font-size:12px}');
   const shell = element('section'); shell.setAttribute('aria-label', '网大助手');
-  element('style', 'section{display:flex;flex-direction:column;max-height:calc(100dvh - 32px)}header{flex-shrink:0}.body{min-height:0}');
-  element('style', '.task-head{display:flex;align-items:flex-start;gap:7px}.task-head h3{flex:1;min-width:0}.sort-actions{display:flex;gap:4px;flex-shrink:0}.sort-actions button{padding:2px 5px;font-size:12px}.sort-handle{cursor:grab}.sort-handle:active{cursor:grabbing}article[data-drop=before]{border-top:3px solid #176ac2}article[data-drop=after]{border-bottom:3px solid #176ac2}article[data-dragging]{opacity:.6}');
-  element('style', 'select,input[type=search]{font:inherit;width:100%;border:1px solid #b8c9d9;border-radius:4px;background:#fff;color:#17344d;padding:6px}');
-  element('style', 'article[data-state=active]{background:#edf6ff;border-color:#72a9df;box-shadow:inset 3px 0 #176ac2}article[data-state=completed]{background:#f3f4f6;border-color:#d8dee5;color:#65727f}article[data-state=attention]{background:#fff9ef;border-color:#e9c78f}.task-priority{margin:3px 0 7px}.task-current{font-size:12px;color:#155a9b;white-space:pre-wrap}.course[data-state=active]{background:#dfedfc;border-radius:4px;padding:8px;border-left:3px solid #176ac2}.course[data-state=active]>span>span,.course[data-state=active] small{color:#155a9b}.course[data-state=active]>span>span{font-weight:600}.course[data-state=completed]{color:#6b7885}.course[data-state=attention] small{color:#8a5716}progress{display:block;width:100%;height:6px;margin:6px 0 9px;border:0;border-radius:4px;overflow:hidden;background:#e1e8ef;accent-color:#176ac2}progress::-webkit-progress-bar{background:#e1e8ef}progress::-webkit-progress-value{background:#176ac2}progress::-moz-progress-bar{background:#176ac2}article[data-state=completed] progress{accent-color:#8b98a5}article[data-state=completed] progress::-webkit-progress-value{background:#8b98a5}article[data-state=completed] progress::-moz-progress-bar{background:#8b98a5}.course progress{margin-bottom:2px}.playback-time{margin-top:4px;font-variant-numeric:tabular-nums}');
-  element('style', '.compact-course,.course-caption,.current-name{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}.course>span{min-width:0}.one-line{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.task-current{margin:8px 0}.current-name{font-weight:600}.task-current small{color:inherit}.compact-notice{margin-top:5px;white-space:pre-wrap;overflow-wrap:anywhere}.task-priority{margin-bottom:3px}.task-current .playback-time{margin-top:3px}');
+  element('style', '.task-head{display:flex;align-items:flex-start;gap:7px}.task-head h3{flex:1;min-width:0}.sort-actions{display:flex;gap:4px;flex-shrink:0}.sort-actions button{min-width:28px;min-height:28px;padding:2px 6px;font-size:13px;line-height:1;display:inline-flex;align-items:center;justify-content:center}.sort-handle{cursor:grab}.sort-handle:active{cursor:grabbing}article[data-drop=before]{border-top:3px solid #176ac2}article[data-drop=after]{border-bottom:3px solid #176ac2}article[data-dragging]{opacity:.6}');
+  element('style', 'select,input[type=search]{font:inherit;width:100%;border:1px solid #b8c9d9;border-radius:4px;background:#fff;color:#17344d;padding:6px}.filter-input{margin:0 0 6px}');
+  element('style', 'article[data-state=active]{background:#edf6ff;border-color:#72a9df;box-shadow:inset 3px 0 #176ac2}article[data-state=completed]{background:#f3f4f6;border-color:#d8dee5;color:#65727f}article[data-state=attention]{background:#fff9ef;border-color:#e9c78f}.task-priority{margin:3px 0 4px}.task-current{font-size:12px;color:#155a9b;white-space:pre-wrap}.course[data-state=active]{background:#dfedfc;border-radius:4px;padding:8px;border-left:3px solid #176ac2}.course[data-state=active]>span>span,.course[data-state=active] small{color:#155a9b}.course[data-state=active]>span>span{font-weight:600}.course[data-state=completed]{color:#6b7885}.course[data-state=attention] small{color:#8a5716}progress{display:block;width:100%;height:6px;margin:6px 0 8px;border:0;border-radius:4px;overflow:hidden;background:#e1e8ef;accent-color:#176ac2}progress::-webkit-progress-bar{background:#e1e8ef}progress::-webkit-progress-value{background:#176ac2}progress::-moz-progress-bar{background:#176ac2}article[data-state=completed] progress{accent-color:#8b98a5}article[data-state=completed] progress::-webkit-progress-value{background:#8b98a5}article[data-state=completed] progress::-moz-progress-bar{background:#8b98a5}.course progress{margin-bottom:2px}.playback-time{margin-top:4px;font-variant-numeric:tabular-nums}.completed-actions{margin:6px 0}');
+  element('style', '.compact-course,.course-caption,.current-name,.task-head h3{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}.course>span{min-width:0}.one-line{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.task-current{margin:6px 0}.current-name{font-weight:600}.task-current small{color:inherit}.compact-notice{margin-top:5px;white-space:pre-wrap;overflow-wrap:anywhere}.task-current .playback-time{margin-top:3px}.task-meta{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:4px 0}.task-meta p{margin:0;flex:1;min-width:0}.detail-toggle{min-height:28px;padding:3px 8px;font-size:12px;flex-shrink:0}');
   const header = element('header', '', shell);
   const headline = element('div', '', header); headline.className = 'headline';
   const title = element('div', '', headline); element('strong', '网大助手', title); element('small', ` ${version}`, title);
   const headerButtons = element('div', '', headline); headerButtons.className = 'row';
-  const busy = new Set(); const editors = new Set(); let adding = false; let starting = false; let reordering = false; let draggedTaskId = null; let latest = controller.getState();
+  const busy = new Set(); const editors = new Set(); let adding = false; let starting = false; let reordering = false; let draggedTaskId = null;
+  let pendingRemoveId = null; let pendingRemoveTimer = null; let windowSavedTimer = null; let copyDiagTimer = null;
+  let latest = controller.getState();
+  const clearRemoveConfirm = () => { if (pendingRemoveTimer !== null) { win.clearTimeout(pendingRemoveTimer); pendingRemoveTimer = null; } pendingRemoveId = null; };
+  const clearTimers = () => {
+    clearRemoveConfirm();
+    if (windowSavedTimer !== null) { win.clearTimeout(windowSavedTimer); windowSavedTimer = null; }
+    if (copyDiagTimer !== null) { win.clearTimeout(copyDiagTimer); copyDiagTimer = null; }
+  };
+  const body = element('div', '', shell); body.className = 'body'; body.hidden = true;
+  const uiErrorBox = element('div', '', body); uiErrorBox.className = 'ui-error'; uiErrorBox.setAttribute('role', 'alert'); uiErrorBox.hidden = true;
+  const uiErrorText = element('span', '', uiErrorBox);
+  const closeUiError = element('button', '×', uiErrorBox); closeUiError.type = 'button'; closeUiError.className = 'ghost'; closeUiError.setAttribute('aria-label', '关闭提示');
+  closeUiError.addEventListener('click', () => { uiErrorBox.hidden = true; uiErrorText.textContent = ''; });
+  const showUiError = text => { uiErrorText.textContent = text; uiErrorBox.hidden = false; body.scrollTop = 0; };
   const button = (action, text, parent, handler, edit = true) => {
     const node = element('button', text, parent); node.type = 'button'; node.dataset.action = action;
     if (edit) editors.add(node);
     node.addEventListener('click', async () => {
       if (node.disabled || busy.has(node)) return;
       busy.add(node); node.disabled = true;
-      try { await handler(); } catch { diagnostic.textContent = '操作未完成，请查看当前状态后重试。'; }
+      try { await handler(); } catch { showUiError('操作未完成，请查看当前状态后重试。'); }
       finally { busy.delete(node); node.disabled = false; render(controller.getState()); }
     });
     return node;
@@ -1928,65 +1951,100 @@ function createPanel(win, controller, version) {
   const compact = element('div', '', header); compact.className = 'muted compact-course';
   const compactTime = element('div', '', header); compactTime.className = 'muted playback-time'; compactTime.dataset.playbackTime = '';
   const compactNotice = element('div', '', header); compactNotice.className = 'muted compact-notice';
-  const body = element('div', '', shell); body.className = 'body'; body.hidden = true;
   const execution = element('div', '', body); execution.className = 'status';
   const message = element('div', '', execution);
   const problemBox = element('div', '', body); problemBox.className = 'problem'; problemBox.dataset.problem = '';
   const problemText = element('div', '', problemBox); const problemActions = element('div', '', problemBox); problemActions.className = 'buttons';
   button('retry', '重试本课程', problemActions, () => controller.retry(latest.problem?.taskId, latest.problem?.courseId));
   button('skip', '跳过并继续', problemActions, () => controller.skipCurrent());
+  const leaveBar = element('div', '', body); leaveBar.className = 'buttons leave-bar'; leaveBar.hidden = true;
+  const leaveLearningButton = button('stop-learning', '退出学习页', leaveBar, () => controller.pause(), false);
   const queueView = element('div', '', body); queueView.dataset.view = 'queue';
   const queueHeading = element('div', '', queueView); queueHeading.className = 'headline'; element('h2', '任务队列', queueHeading);
-  button('add', '添加专区', queueHeading, () => { adding = true; render(controller.getState()); target.focus(); });
-  element('p', '拖动 ↕ 调整优先级', queueView).className = 'muted';
-  const clearCompleted = button('clear-completed', '清除已完成', queueView, () => controller.clearCompletedTasks(), false);
+  const queueHeaderActions = element('div', '', queueHeading); queueHeaderActions.className = 'row';
+  const clearCompleted = button('clear-completed', '清除已完成', queueHeaderActions, () => controller.clearCompletedTasks(), false);
+  clearCompleted.className = 'ghost';
   clearCompleted.title = '清理已完成专区，保留执行中、未完成和待处理任务。';
-  const empty = element('p', '还没有任务，点击“添加专区”开始。', queueView); empty.className = 'muted';
+  const addButton = button('add', '添加专区', queueHeaderActions, () => { adding = true; clearRemoveConfirm(); render(controller.getState()); target.focus(); });
+  const empty = element('p', '暂无学习任务', queueView); empty.className = 'muted';
   const taskList = element('div', '', queueView);
-  const queueControls = element('div', '', queueView); queueControls.className = 'buttons';
-  const startButton = button('start', '开始 / 继续队列', queueControls, () => startQueue()); startButton.className = 'primary';
   const addView = element('div', '', body); addView.dataset.view = 'add';
-  element('h2', '添加专区', addView);
+  const exitAddView = async () => { if (await controller.discardDraft() !== false) { adding = false; target.value = ''; } };
+  const addHeading = element('div', '', addView); addHeading.className = 'headline';
+  element('h2', '添加专区', addHeading);
+  const backButton = button('back', '← 返回', addHeading, exitAddView); backButton.className = 'ghost';
   const searchBox = element('div', '', addView);
   const labelInput = (caption, name, parent) => { const label = element('label', caption, parent); const input = element('input', '', label); input.type = 'text'; input.name = name; input.id = `wd-${name}`; label.htmlFor = input.id; editors.add(input); return input; };
   const target = labelInput('专区名称', 'target', searchBox);
+  target.placeholder = '输入名称后按回车搜索';
   const searchActions = element('div', '', searchBox); searchActions.className = 'buttons';
-  button('search', '搜索专区', searchActions, () => controller.search(target.value.trim()));
-  button('collect', '读取当前专区', searchActions, () => controller.collectDraft());
+  const searchButton = button('search', '搜索', searchActions, () => controller.search(target.value.trim())); searchButton.className = 'primary';
+  button('collect', '读取当前页', searchActions, () => controller.collectDraft());
+  target.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); searchButton.click(); } });
   const candidates = element('div', '', addView); candidates.dataset.candidates = '';
   const draftBox = element('div', '', addView); draftBox.dataset.draft = '';
   const draftTitle = element('h3', '', draftBox);
-  const draftHelp = element('p', '核对课程后加入队列；已完成和待确认课程默认不勾选。', draftBox); draftHelp.className = 'muted';
   const draftCourses = createCourseList(draftBox);
   const addActions = element('div', '', draftBox); addActions.className = 'buttons';
   const addDraftButton = button('add-draft', '加入队列', addActions, async () => { if (await controller.addDraft()) { adding = false; target.value = ''; } }); addDraftButton.className = 'primary';
-  button('back', '取消添加，返回队列', addView, async () => { if (await controller.discardDraft() !== false) { adding = false; target.value = ''; } });
-  const windowBox = element('details', '', body); windowBox.className = 'separator'; element('summary', '学习时段（北京时间）', windowBox);
-  const windowRow = element('div', '', windowBox); windowRow.className = 'row';
-  const fields = { start: labelInput('开始时间', 'start', windowRow), end: labelInput('结束时间（支持24:00）', 'end', windowRow) };
+  const cancelDraftButton = button('cancel-draft', '取消', addActions, exitAddView); cancelDraftButton.className = 'ghost';
+  const settingsBox = element('details', '', body); settingsBox.className = 'separator'; settingsBox.dataset.settings = '';
+  const settingsSummary = element('summary', '设置', settingsBox);
+  const runningEditHint = element('p', '运行中仅可查看，暂停后可修改。', settingsBox); runningEditHint.className = 'muted'; runningEditHint.hidden = true;
+  const windowGroup = element('div', '', settingsBox); windowGroup.className = 'settings-group';
+  element('p', '学习时段（北京时间）', windowGroup).className = 'settings-title';
+  const windowRow = element('div', '', windowGroup); windowRow.className = 'row';
+  const fields = { start: labelInput('开始时间', 'start', windowRow), end: labelInput('结束时间', 'end', windowRow) };
+  fields.start.placeholder = '09:00'; fields.end.placeholder = '24:00';
   const dirty = new Set(); for (const [name, field] of Object.entries(fields)) field.addEventListener('input', () => dirty.add(name));
-  button('save-window', '保存学习时段', windowBox, () => saveWindow());
-  const autoBox = element('div', '', body); autoBox.className = 'separator'; element('h2', '自动模式', autoBox);
-  function automaticInput(name, caption) {
-    const label = element('label', '', autoBox); const input = element('input', '', label); input.type = 'checkbox'; input.name = name; editors.add(input);
+  const saveWindowButton = button('save-window', '保存', windowGroup, async () => {
+    if (await saveWindow()) {
+      saveWindowButton.textContent = '已保存';
+      if (windowSavedTimer !== null) win.clearTimeout(windowSavedTimer);
+      windowSavedTimer = win.setTimeout(() => { windowSavedTimer = null; saveWindowButton.textContent = '保存'; }, 2000);
+    }
+  });
+  const muteGroup = element('div', '', settingsBox); muteGroup.className = 'settings-group';
+  const autoGroup = element('div', '', settingsBox); autoGroup.className = 'settings-group';
+  function automaticInput(name, caption, parent) {
+    const label = element('label', '', parent); const input = element('input', '', label); input.type = 'checkbox'; input.name = name; editors.add(input);
     element('span', ` ${caption}`, label);
     input.addEventListener('change', async () => {
       if (input.disabled) return;
       busy.add(input); input.disabled = true;
       try { await controller.setAutomation({ enabled: automatic.checked, resumeOnReload: automatic.checked && resumeOnReload.checked, mute: mute.checked }); }
-      catch { diagnostic.textContent = '自动设置保存失败，请重试。'; }
+      catch { showUiError('自动设置保存失败，请重试。'); }
       finally { busy.delete(input); render(controller.getState()); }
     }); return input;
   }
-  const automatic = automaticInput('automatic', '自动重试、暂存异常课程并续学');
-  const resumeOnReload = automaticInput('resumeOnReload', '刷新或重新打开后恢复已开始的队列');
-  const mute = automaticInput('mute', '自动静音课程');
-  mute.title = '开启时持续保持静音；需要声音时请暂停任务后关闭此选项。';
-  element('p', '自动重试开启后，按学习时段续学；主动暂停会取消自动执行。需保持网大页面打开。', autoBox).className = 'muted';
-  const utility = element('div', '', body); utility.className = 'buttons';
-  button('stop-learning', '停止学习并退出', utility, () => controller.pause(), false);
-  button('diagnose', '页面诊断', utility, () => { diagnostic.textContent = JSON.stringify(controller.diagnose(), null, 2); }, false);
-  const diagnostic = element('pre', '', body);
+  const mute = automaticInput('mute', '自动静音课程', muteGroup);
+  mute.title = '开启期间持续保持静音；需要声音时请暂停后关闭。';
+  const automatic = automaticInput('automatic', '异常自动重试并跳过人工课', autoGroup);
+  const resumeOnReload = automaticInput('resumeOnReload', '刷新页面后自动恢复队列', autoGroup);
+  const autoHint = element('p', '需保持页面打开；手动暂停将停止续学。', autoGroup); autoHint.className = 'muted'; autoHint.hidden = true;
+  const utility = element('div', '', body); utility.className = 'diag-bar separator';
+  const diagTrigger = button('diagnose', '页面诊断', utility, () => {
+    diagnostic.textContent = JSON.stringify(controller.diagnose(), null, 2);
+    diagnosticBox.hidden = false;
+  }, false);
+  diagTrigger.className = 'ghost';
+  const diagnosticBox = element('div', '', body); diagnosticBox.dataset.diagnosticBox = ''; diagnosticBox.hidden = true;
+  const diagControls = element('div', '', diagnosticBox); diagControls.className = 'diag-bar';
+  element('small', '诊断信息', diagControls);
+  const diagActions = element('div', '', diagControls); diagActions.className = 'diag-actions';
+  const copyDiagButton = button('copy-diagnose', '复制', diagActions, async () => {
+    if (!diagnostic.textContent) return;
+    if (win.navigator?.clipboard?.writeText) {
+      await win.navigator.clipboard.writeText(diagnostic.textContent);
+      copyDiagButton.textContent = '已复制';
+      if (copyDiagTimer !== null) win.clearTimeout(copyDiagTimer);
+      copyDiagTimer = win.setTimeout(() => { copyDiagTimer = null; copyDiagButton.textContent = '复制'; }, 2000);
+    }
+  }, false);
+  copyDiagButton.className = 'ghost';
+  const closeDiagButton = button('close-diagnose', '收起', diagActions, () => { diagnosticBox.hidden = true; }, false);
+  closeDiagButton.className = 'ghost';
+  const diagnostic = element('pre', '', diagnosticBox);
   const taskNodes = new Map(); let candidateSignature = ''; let draftSubjectId = null;
   const setOpen = open => { body.hidden = !open; toggle.textContent = open ? '收起' : '展开'; toggle.setAttribute('aria-expanded', String(open)); render(controller.getState()); };
   const eligible = task => task.courses.filter(course => course.selected && (task.scope === 'all' || course.required));
@@ -1999,13 +2057,14 @@ function createPanel(win, controller, version) {
     return Boolean(selected.length && (state.currentCourseId ? selected.some(course => course.id === state.currentCourseId && (state.status === 'running' || !isDone(task, course.id)) && !task.skipped.includes(course.id) && !task.deferred?.some(entry => entry.courseId === course.id)) : ['running', 'waiting'].includes(state.status) || state.phase === 'resuming'));
   };
   const sortableTasks = () => latest.tasks.filter(task => !completeTask(task));
-  const phaseLabel = state => ({ paused: '已暂停', preparing: '正在准备', running: '学习中', complete: '已完成', retrying: '正在重试', waiting: '等待学习时段', offline: '等待网络', resuming: '正在恢复', confirming: '等待平台确认' }[state.phase || state.status] || '等待确认');
+  const phaseLabels = { paused: '已暂停', preparing: '正在准备', running: '学习中', complete: '已完成', retrying: '正在重试', waiting: '等待学习时段', offline: '等待网络', resuming: '正在恢复', confirming: '等待平台确认' };
+  const phaseLabel = state => phaseLabels[state.phase || state.status] || '等待确认';
   const playbackFor = (item, courseId) => {
     const value = latest.currentPlayback;
     return currentTask(item) && latest.status === 'running' && !['retrying', 'offline', 'resuming'].includes(latest.phase) && value?.taskId === item.id && value.courseId === courseId ? value : null;
   };
   const executionLabel = (item, courseId = latest.currentCourseId) => {
-    if (latest.status !== 'running' || ['retrying', 'offline', 'resuming'].includes(latest.phase)) return phaseLabel(latest);
+    if (latest.status !== 'running' || ['retrying', 'offline', 'resuming'].includes(latest.phase)) return latest.status === 'paused' ? '当前' : phaseLabel(latest);
     if (isDone(item, courseId)) return '正在切换课程';
     const playback = playbackFor(item, courseId);
     if (playback) return playback.ended ? '等待平台确认完成' : playback.paused ? '正在准备播放' : '正在播放';
@@ -2013,7 +2072,15 @@ function createPanel(win, controller, version) {
   };
   const clock = value => { const seconds = Math.floor(value); const minutes = Math.floor(seconds / 60); return minutes >= 60 ? `${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}` : `${String(minutes).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`; };
   const playbackText = value => Number.isFinite(value?.currentTime) && Number.isFinite(value?.duration) && value.currentTime >= 0 && value.duration > 0 ? `${clock(Math.min(value.currentTime, value.duration))} / ${clock(value.duration)}` : '';
-  const quietMessages = new Set(['已暂停', '已完成', '执行中', '学习中', '已暂停，确认配置和课程后点击开始。', '已暂停，继续学习需手动点击开始。', '正在按平台课节状态连续学习。', '等待平台确认当前课节完成。', '所选课程已全部完成。', '已进入学习时段，正在继续队列。', '正在重新进入课程。']);
+  const quietMessages = new Set([
+    '已暂停', '已完成', '执行中', '学习中',
+    '已暂停，确认配置和课程后点击开始。', '已暂停，继续学习需手动点击开始。',
+    '正在按平台课节状态连续学习。', '等待平台确认当前课节完成。',
+    '所选课程已全部完成。', '已进入学习时段，正在继续队列。', '正在重新进入课程。',
+    '已读取待添加清单，请核对课程勾选后添加。',
+    '请点击确认要学习的专题。', '请点击确认要学习的专区。',
+    '有待学课程，请手动点击开始继续。',
+  ]);
   const saveWindow = async () => {
     const next = { start: fields.start.value.trim(), end: fields.end.value.trim() };
     if (JSON.stringify(next) !== JSON.stringify(controller.getState().window) && !await controller.setWindow(next)) return false;
@@ -2029,7 +2096,7 @@ function createPanel(win, controller, version) {
   const moveDisplayedTask = async (id, index) => {
     if (!canSort()) return;
     reordering = true; render(controller.getState());
-    try { if (!await controller.moveTask(id, index)) diagnostic.textContent = '顺序未保存，请查看当前提示后重试。'; }
+    try { if (!await controller.moveTask(id, index)) showUiError('顺序未保存，请查看当前提示后重试。'); }
     finally { reordering = false; render(controller.getState()); }
   };
   const movePriority = (id, offset) => {
@@ -2042,32 +2109,37 @@ function createPanel(win, controller, version) {
     for (const node of taskList.children) { delete node.dataset.drop; delete node.dataset.dragging; }
   };
   function createCourseList(parent, taskId = null) {
-    const modeLabel = element('label', '学习范围', parent); const mode = element('select', '', modeLabel); mode.name = `course-mode-${taskId || 'draft'}`; editors.add(mode);
-    for (const [value, text] of [['all-pending', '专区全部待学（可调整勾选）'], ['specific', '指定课程（只学手动选择）']]) { const option = element('option', text, mode); option.value = value; }
-    element('p', '切换范围会重设勾选。', parent).className = 'muted';
+    const scopeId = taskId || 'draft';
+    const modeLabel = element('label', '学习范围', parent); const mode = element('select', '', modeLabel); mode.name = `course-mode-${scopeId}`; mode.title = '切换范围将重设当前勾选'; editors.add(mode);
+    for (const [value, text] of [['all-pending', '全部待学'], ['specific', '仅学指定课程']]) { const option = element('option', text, mode); option.value = value; }
     mode.addEventListener('change', async () => {
       if (mode.disabled) return; busy.add(mode); mode.disabled = true;
-      try { await controller.setTaskMode(taskId, mode.value); } catch { diagnostic.textContent = '学习范围未保存，请重试。'; }
+      try { await controller.setTaskMode(taskId, mode.value); } catch { showUiError('学习范围未保存，请重试。'); }
       finally { busy.delete(mode); render(controller.getState()); }
     });
-    const filterLabel = element('label', '筛选课程名称', parent); const filter = element('input', '', filterLabel); filter.type = 'search'; filter.name = `course-filter-${taskId || 'draft'}`; filter.placeholder = '输入课程名称或关键词';
+    const filter = element('input', '', parent); filter.type = 'search'; filter.className = 'filter-input'; filter.name = `course-filter-${scopeId}`; filter.setAttribute('aria-label', '筛选课程名称'); filter.placeholder = '筛选课程名称';
     filter.addEventListener('input', () => render(controller.getState()));
     const selection = element('p', '', parent); selection.className = 'muted';
-    element('p', '筛选不会取消隐藏勾选；批量操作作用于整份清单。', parent).className = 'muted';
     const controls = element('div', '', parent); controls.className = 'buttons';
-    for (const [mode, caption] of [['unfinished', '全部未完成'], ['required', '仅必修'], ['none', '清空选择'], ['completed', '勾选已完成']]) button(`select-${mode}-${taskId || 'draft'}`, caption, controls, () => controller.selectCourses(taskId, mode));
+    for (const [modeName, caption] of [['unfinished', '全选待学'], ['required', '仅选必修'], ['none', '清空']]) {
+      const btn = button(`select-${modeName}-${scopeId}`, caption, controls, () => controller.selectCourses(taskId, modeName));
+      if (modeName === 'none') btn.className = 'ghost';
+    }
     const pending = element('div', '', parent); const completed = element('details', '', parent); completed.dataset.completed = '';
-    const summary = element('summary', '已完成课程', completed); const completeList = element('div', '', completed);
-    const noMatches = element('p', '没有匹配的课程，请调整关键词。', parent); noMatches.dataset.noMatches = ''; noMatches.className = 'muted';
+    const summary = element('summary', '已完成课程', completed);
+    const completedActions = element('div', '', completed); completedActions.className = 'buttons completed-actions';
+    button(`select-completed-${scopeId}`, '全选已完成', completedActions, () => controller.selectCourses(taskId, 'completed'));
+    if (taskId !== null) button(`recheck-${taskId}`, '复查已选', completedActions, () => controller.recheckCompleted(taskId));
+    const completeList = element('div', '', completed);
+    const noMatches = element('p', '没有匹配的课程。', parent); noMatches.dataset.noMatches = ''; noMatches.className = 'muted';
     return { pending, completed, summary, completeList, nodes: new Map(), mode, filter, selection, noMatches };
   }
   function updateCourses(view, courses, item = null) {
     const ids = new Set(courses.map(course => course.id));
     for (const [id, row] of view.nodes) if (!ids.has(id)) { editors.delete(row.input); if (row.retry) editors.delete(row.retry); row.label.remove(); view.nodes.delete(id); }
-    let completedCount = 0, visibleCount = 0, matchedCompleted = 0;
+    let completedCount = 0, visibleCount = 0, matchedCompleted = 0, selectedCount = 0, hiddenSelectedCount = 0;
     const query = view.filter.value.trim().toLocaleLowerCase();
     view.mode.value = (item || latest.draft)?.selectionMode || 'all-pending';
-    view.selection.textContent = `已选 ${courses.filter(course => course.selected && (item?.scope !== 'required' || course.required)).length} 门 / 共 ${courses.length} 门`;
     for (const course of courses) {
       let row = view.nodes.get(course.id);
       if (!row) {
@@ -2080,7 +2152,7 @@ function createPanel(win, controller, version) {
           if (input.disabled) return;
           busy.add(input); input.disabled = true;
           try { if (item) await controller.setSelection(item.id, course.id, input.checked); else controller.draftSetSelection(course.id, input.checked); }
-          catch { diagnostic.textContent = '勾选未能保存，请重试。'; }
+          catch { showUiError('勾选未能保存，请重试。'); }
           finally { busy.delete(input); render(controller.getState()); }
         });
         const retry = item ? button(`retry-${item.id}-${course.id}`, '重试', label, () => controller.retry(item.id, course.id)) : null;
@@ -2090,12 +2162,14 @@ function createPanel(win, controller, version) {
       const current = item && currentTask(item) && latest.currentCourseId === course.id && !isDone(item, course.id);
       const done = !current && !recheck && (isDone(item, course.id) || course.status === 'completed'); const skipped = item?.skipped.includes(course.id);
       const deferred = item?.deferred?.find(entry => entry.courseId === course.id);
-      const status = deferred ? `待处理：${deferred.reason}` : skipped ? '已跳过' : current ? executionLabel(item, course.id) : recheck ? '待复查课节' : isDone(item, course.id) ? '已完成' : ({ completed: '已完成', learning: '学习中', 'not-started': '未开始', unknown: '待确认' }[course.status] || '待确认');
+      const status = deferred ? `待处理：${deferred.reason.replace(/[。.]$/u, '')}` : skipped ? '已跳过' : current ? (latest.status === 'paused' ? '当前课程' : executionLabel(item, course.id)) : recheck ? '待复查课节' : isDone(item, course.id) ? '已完成' : ({ completed: '已完成', learning: '学习中', 'not-started': '未开始', unknown: '待确认' }[course.status] || '待确认');
       row.label.dataset.state = current ? 'active' : deferred || skipped ? 'attention' : done ? 'completed' : 'pending';
       const playback = current ? playbackFor(item, course.id) : null; const timeText = playbackText(playback);
       row.time.textContent = timeText; row.time.hidden = !timeText; row.playback.hidden = !timeText;
       row.playback.max = timeText ? playback.duration : 1; row.playback.value = timeText ? Math.min(playback.currentTime, playback.duration) : 0;
-      row.caption.textContent = course.title; row.caption.title = course.title; row.meta.textContent = `${status} · ${course.required ? '必修' : '选修'}`; row.input.checked = course.selected;
+      row.caption.textContent = course.title; row.caption.title = course.title;
+      const reqTag = course.required ? '必修' : '选修';
+      row.meta.textContent = deferred ? `${reqTag} · ${status}` : `${status} · ${reqTag}`; row.input.checked = course.selected;
       row.section.textContent = current && latest.currentSectionTitle ? `课节 · ${latest.currentSectionTitle}` : ''; row.section.title = latest.currentSectionTitle || ''; row.section.hidden = !row.section.textContent;
       row.input.disabled = latest.unavailable || ['running', 'preparing', 'waiting'].includes(latest.status) || Boolean(item?.scope === 'required' && !course.required);
       row.input.dataset.legacyDisabled = String(Boolean(item?.scope === 'required' && !course.required));
@@ -2104,8 +2178,13 @@ function createPanel(win, controller, version) {
       if (row.label.parentNode !== container) container.append(row.label);
       if (done && !skipped && !deferred) completedCount += 1;
       row.label.hidden = Boolean(query && !course.title.toLocaleLowerCase().includes(query));
+      const isSelected = Boolean(course.selected && (item?.scope !== 'required' || course.required));
+      if (isSelected) { selectedCount += 1; if (row.label.hidden) hiddenSelectedCount += 1; }
       if (!row.label.hidden) { visibleCount += 1; if (container === view.completeList) matchedCompleted += 1; }
     }
+    view.selection.textContent = query && hiddenSelectedCount
+      ? `已选 ${selectedCount}/${courses.length} 门（含 ${hiddenSelectedCount} 门未显示）`
+      : `已选 ${selectedCount}/${courses.length} 门`;
     view.completed.hidden = completedCount === 0; view.summary.textContent = `已完成课程（${completedCount}）`;
     if (query && matchedCompleted) view.completed.open = true;
     view.noMatches.hidden = visibleCount > 0;
@@ -2120,8 +2199,8 @@ function createPanel(win, controller, version) {
         const heading = element('div', '', article); heading.className = 'task-head'; const title = element('h3', '', heading);
         const sorting = element('div', '', heading); sorting.className = 'sort-actions';
         const handle = element('button', '↕', sorting); handle.type = 'button'; handle.className = 'sort-handle'; handle.dataset.dragTask = item.id; handle.title = '拖动调整专区顺序';
-        const up = button(`move-up-${item.id}`, '上移', sorting, () => movePriority(item.id, -1), false);
-        const down = button(`move-down-${item.id}`, '下移', sorting, () => movePriority(item.id, 1), false);
+        const up = button(`move-up-${item.id}`, '↑', sorting, () => movePriority(item.id, -1), false);
+        const down = button(`move-down-${item.id}`, '↓', sorting, () => movePriority(item.id, 1), false);
         handle.addEventListener('dragstart', event => {
           if (!canSort() || handle.disabled || completeTask(latest.tasks.find(task => task.id === item.id))) { event.preventDefault(); return; }
           clearDrag(); draggedTaskId = item.id; article.dataset.dragging = '';
@@ -2139,40 +2218,62 @@ function createPanel(win, controller, version) {
         article.addEventListener('drop', async event => {
           if (!draggedTaskId || !canSort() || completeTask(latest.tasks.find(task => task.id === item.id))) { clearDrag(); return; }
           event.preventDefault(); const id = draggedTaskId;
-          const from = latest.tasks.findIndex(task => task.id === id), target = latest.tasks.findIndex(task => task.id === item.id);
-          const insertion = target + Number(after(event)); clearDrag();
-          if (from < 0 || target < 0 || id === item.id || completeTask(latest.tasks[from])) return;
+          const from = latest.tasks.findIndex(task => task.id === id), targetIdx = latest.tasks.findIndex(task => task.id === item.id);
+          const insertion = targetIdx + Number(after(event)); clearDrag();
+          if (from < 0 || targetIdx < 0 || id === item.id || completeTask(latest.tasks[from])) return;
           try { await moveDisplayedTask(id, insertion - Number(from < insertion)); }
-          catch { diagnostic.textContent = '顺序未保存，请查看当前提示后重试。'; }
+          catch { showUiError('顺序未保存，请查看当前提示后重试。'); }
         });
         const priority = element('p', '', article); priority.className = 'task-priority muted';
-        const summary = element('p', '', article); summary.dataset.taskSummary = item.id;
+        const metaRow = element('div', '', article); metaRow.className = 'task-meta';
+        const summary = element('p', '', metaRow); summary.dataset.taskSummary = item.id;
+        const detailButton = button(`detail-${item.id}`, '详情 ▾', metaRow, () => { detail.hidden = !detail.hidden; detailButton.textContent = detail.hidden ? '详情 ▾' : '收起 ▴'; detailButton.setAttribute('aria-expanded', String(!detail.hidden)); }, false); detailButton.className = 'ghost detail-toggle'; detailButton.setAttribute('aria-expanded', 'false');
         const completion = element('progress', '', article); completion.dataset.taskProgress = item.id;
         const current = element('div', '', article); current.className = 'task-current';
         const currentName = element('div', '', current); currentName.className = 'current-name';
         const currentSection = element('small', '', current); currentSection.className = 'one-line';
         const currentTime = element('small', '', current); currentTime.className = 'playback-time';
-        const detailButton = button(`detail-${item.id}`, '查看详情', article, () => { detail.hidden = !detail.hidden; detailButton.textContent = detail.hidden ? '查看详情' : '收起详情'; detailButton.setAttribute('aria-expanded', String(!detail.hidden)); }, false); detailButton.setAttribute('aria-expanded', 'false');
         const detail = element('div', '', article); detail.dataset.taskDetail = item.id; detail.hidden = true;
         const legacy = element('p', '旧任务仅执行必修课程和课节；需要包含选修可移出后重新添加专区。', detail); legacy.className = 'muted';
-        const courses = createCourseList(detail, item.id); const actions = element('div', '', detail); actions.className = 'buttons';
-        const refresh = button(`refresh-${item.id}`, '更新清单', actions, () => controller.refreshTask(item.id));
-        button(`recheck-${item.id}`, '复查所选已完成课程', actions, () => controller.recheckCompleted(item.id));
-        button(`remove-${item.id}`, '移出队列', actions, () => controller.removeTask(item.id));
-        view = { article, title, priority, summary, completion, current, currentName, currentSection, currentTime, detail, legacy, courses, refresh, handle, up, down }; taskNodes.set(item.id, view);
+        const courses = createCourseList(detail, item.id); const actions = element('div', '', detail); actions.className = 'buttons detail-actions';
+        const refresh = button(`refresh-${item.id}`, '刷新课程', actions, () => controller.refreshTask(item.id));
+        const remove = button(`remove-${item.id}`, '移出队列', actions, async () => {
+          if (pendingRemoveId !== item.id) {
+            clearRemoveConfirm();
+            pendingRemoveId = item.id;
+            pendingRemoveTimer = win.setTimeout(() => { clearRemoveConfirm(); render(controller.getState()); }, 3000);
+            return;
+          }
+          clearRemoveConfirm();
+          await controller.removeTask(item.id);
+        });
+        remove.className = 'danger';
+        view = { article, title, sorting, priority, summary, completion, current, currentName, currentSection, currentTime, detail, legacy, courses, refresh, remove, handle, up, down }; taskNodes.set(item.id, view);
       }
-      view.title.textContent = item.subject?.title || item.target;
-      view.handle.setAttribute('aria-label', `拖动排序：${item.subject?.title || item.target}`);
+      const subjectTitle = item.subject?.title || item.target;
+      view.title.textContent = subjectTitle; view.title.title = subjectTitle;
+      view.handle.setAttribute('aria-label', `拖动排序：${subjectTitle}`);
+      view.up.setAttribute('aria-label', `上移：${subjectTitle}`);
+      view.down.setAttribute('aria-label', `下移：${subjectTitle}`);
       const sortable = sortableTasks(); const priorityIndex = sortable.findIndex(task => task.id === item.id); const completed = completeTask(item), current = currentTask(item, state);
-      view.handle.disabled = !canSort() || completed || sortable.length < 2; view.handle.draggable = !view.handle.disabled;
-      view.up.disabled = !canSort() || completed || priorityIndex <= 0; view.down.disabled = !canSort() || completed || priorityIndex === sortable.length - 1;
-      view.up.title = '提高执行优先级，当前课程继续'; view.down.title = '降低执行优先级，当前课程继续';
+      const showSort = !completed && sortable.length >= 2;
+      view.sorting.hidden = !showSort;
+      view.handle.disabled = !canSort() || !showSort; view.handle.draggable = !view.handle.disabled;
+      view.up.disabled = !canSort() || !showSort || priorityIndex <= 0; view.down.disabled = !canSort() || !showSort || priorityIndex === sortable.length - 1;
+      view.up.title = '上移优先级（当前课程继续）'; view.down.title = '下移优先级（当前课程继续）';
+      const confirmingRemove = pendingRemoveId === item.id && !isRunning(state) && !state.unavailable;
+      view.remove.textContent = confirmingRemove ? '确认移出？' : '移出队列';
+      view.remove.className = confirmingRemove ? 'danger danger-confirm' : 'danger';
       const total = counts(item);
-      const status = !item.subject ? '尚未读取专区，请移出后重新添加' : !total.selected ? '尚未选择课程' : current ? executionLabel(item) : total.deferred ? '有待处理课程' : item.skipped.length ? '有跳过课程待重试' : item.recheck?.length ? '有待复查课程' : completed ? '全部完成' : '待学习';
-      view.article.dataset.state = current ? 'active' : completed ? 'completed' : total.deferred || item.skipped.length || item.recheck?.length ? 'attention' : 'pending';
-      view.priority.textContent = `优先级 ${priorityIndex + 1}`; view.priority.hidden = completed;
       const issues = [['待处理', total.deferred], ['跳过', item.skipped.length], ['待复查', item.recheck?.length || 0]].filter(([, count]) => count).map(([name, count]) => `${name} ${count}`);
-      view.summary.textContent = completed ? `已完成 ${total.selected} 门` : `${status} · 完成 ${total.done}/${total.selected} 门${issues.length ? ` · ${issues.join(' · ')}` : ''}`;
+      view.article.dataset.state = current ? 'active' : completed ? 'completed' : issues.length ? 'attention' : 'pending';
+      view.priority.textContent = `优先级 ${priorityIndex + 1}`; view.priority.hidden = completed || sortable.length < 2;
+      if (!item.subject) view.summary.textContent = '尚未读取专区，请移出后重新添加';
+      else if (!total.selected) view.summary.textContent = '尚未选择课程';
+      else if (completed) view.summary.textContent = `已完成 ${total.selected} 门`;
+      else if (current) view.summary.textContent = `${executionLabel(item)} · 完成 ${total.done}/${total.selected} 门${issues.length ? ` · ${issues.join(' · ')}` : ''}`;
+      else if (issues.length) view.summary.textContent = `完成 ${total.done}/${total.selected} 门 · ${issues.join(' · ')}`;
+      else view.summary.textContent = `待学习 · 完成 ${total.done}/${total.selected} 门`;
       view.completion.max = total.selected || 1; view.completion.value = total.done; view.completion.hidden = !total.selected; view.completion.setAttribute('aria-label', `专区已完成 ${total.done} / ${total.selected} 门`);
       view.currentName.textContent = current ? item.courses.find(course => course.id === state.currentCourseId)?.title || '正在确认课程' : ''; view.currentName.title = view.currentName.textContent;
       view.currentSection.textContent = current && state.currentSectionTitle ? `课节 · ${state.currentSectionTitle}` : ''; view.currentSection.title = state.currentSectionTitle || ''; view.currentSection.hidden = !view.currentSection.textContent;
@@ -2189,12 +2290,12 @@ function createPanel(win, controller, version) {
     latest = state;
     const running = isRunning(state);
     const active = state.tasks.find(item => item.id === state.activeTaskId);
-    const labels = { paused: '已暂停', preparing: '正在准备', running: '学习中', complete: '已完成', retrying: '正在重试', waiting: '等待学习时段', offline: '等待网络', resuming: '正在恢复', confirming: '等待平台确认' };
     const all = state.tasks.reduce((sum, task) => { const c = counts(task); return { done: sum.done + c.done, selected: sum.selected + c.selected, deferred: sum.deferred + c.deferred }; }, { done: 0, selected: 0, deferred: 0 });
-    progress.textContent = `${labels[state.phase || state.status] || state.status} · 总完成 ${all.done}/${all.selected} 门${all.deferred ? ` · 待处理 ${all.deferred}` : ''}`;
+    progress.textContent = `${phaseLabels[state.phase || state.status] || state.status} · 总完成 ${all.done}/${all.selected} 门${all.deferred ? ` · 待处理 ${all.deferred}` : ''}`;
     compact.textContent = active?.courses.find(course => course.id === state.currentCourseId)?.title || ''; compact.title = compact.textContent; compact.hidden = !body.hidden || !compact.textContent;
     compactTime.textContent = active ? playbackText(playbackFor(active, state.currentCourseId)) : ''; compactTime.hidden = !body.hidden || !compactTime.textContent;
-    const notice = quietMessages.has(state.message) ? '' : state.message;
+    const rawNotice = quietMessages.has(state.message) ? '' : String(state.message || '').replace(/有待学课程，请手动点击开始继续。$/u, '').trim();
+    const notice = quietMessages.has(rawNotice) ? '' : rawNotice;
     message.textContent = notice; execution.hidden = !notice || notice === state.problem?.reason;
     compactNotice.textContent = notice || state.problem?.reason || ''; compactNotice.hidden = !body.hidden || !compactNotice.textContent;
     problemBox.hidden = !state.problem;
@@ -2203,30 +2304,46 @@ function createPanel(win, controller, version) {
     else if (draftSubjectId && state.tasks.some(item => item.subject?.id === draftSubjectId)) adding = false;
     draftSubjectId = state.draft?.subject.id || null;
     queueView.hidden = adding; addView.hidden = !adding; searchBox.hidden = Boolean(state.draft); draftBox.hidden = !state.draft;
+    settingsBox.hidden = adding;
     empty.hidden = state.tasks.length > 0;
     for (const [name, field] of Object.entries(fields)) if (!dirty.has(name) && root.activeElement !== field) field.value = state.window[name];
     updateTasks(state);
     const signature = JSON.stringify(state.candidates);
-    if (candidateSignature !== signature) { candidateSignature = signature; for (const control of candidates.querySelectorAll('button')) editors.delete(control); candidates.replaceChildren(); if (state.candidates.length) element('p', '请选择要添加的专区：', candidates); for (const item of state.candidates) { const candidate = button(`candidate-${item.id}`, item.title, candidates, () => controller.chooseCandidate(item.id)); candidate.className = 'candidate'; } }
+    if (candidateSignature !== signature) { candidateSignature = signature; for (const control of candidates.querySelectorAll('button')) editors.delete(control); candidates.replaceChildren(); if (state.candidates.length) element('p', '选择要添加的专区：', candidates); for (const item of state.candidates) { const candidate = button(`candidate-${item.id}`, item.title, candidates, () => controller.chooseCandidate(item.id)); candidate.className = 'candidate'; } }
     candidates.hidden = !adding || Boolean(state.draft) || running || !state.candidates.length;
     if (state.draft) { draftTitle.textContent = state.draft.subject.title; updateCourses(draftCourses, state.draft.courses); }
     for (const control of editors) control.disabled = running || state.unavailable || control.dataset.legacyDisabled === 'true';
     automatic.checked = state.automation?.enabled === true; resumeOnReload.checked = state.automation?.resumeOnReload === true; mute.checked = state.automation?.mute !== false;
     resumeOnReload.disabled ||= !automatic.checked;
-    for (const control of problemActions.querySelectorAll('button')) control.disabled ||= adding;
+    autoHint.hidden = !automatic.checked;
+    runningEditHint.hidden = !running;
+    settingsSummary.textContent = `设置 · ${state.window.start}–${state.window.end}${automatic.checked ? ' · 自动开' : ''}${mute.checked ? ' · 已静音' : ''}`;
+    for (const control of problemActions.querySelectorAll('button')) if (control !== leaveLearningButton) control.disabled ||= adding;
+    const showLeave = !running && !adding && Boolean(state.onOwnedLearningPage);
+    if (showLeave) {
+      const targetParent = state.problem ? problemActions : leaveBar;
+      if (leaveLearningButton.parentNode !== targetParent) targetParent.append(leaveLearningButton);
+    }
+    leaveLearningButton.hidden = !showLeave;
+    leaveLearningButton.disabled = !showLeave || state.unavailable;
+    leaveBar.hidden = !showLeave || Boolean(state.problem);
+    if (running || state.unavailable) clearRemoveConfirm();
     const hasPending = state.tasks.some(item => item.subject && eligible(item).some(course => !isDone(item, course.id) && !item.skipped.includes(course.id) && !item.deferred?.some(entry => entry.courseId === course.id)));
     const cannotStart = starting || state.unavailable || adding || Boolean(state.draft) || !hasPending;
     const hasStarted = Boolean(state.currentCourseId) || state.tasks.some(item => item.current || item.done.length || item.skipped.length || item.deferred?.length);
-    startButton.disabled = running || cannotStart;
     const completedCount = state.tasks.filter(item => completeTask(item) && !(running && item.id === state.activeTaskId)).length;
-    clearCompleted.textContent = `清除已完成${completedCount ? `（${completedCount}）` : ''}`;
+    clearCompleted.textContent = `清除已完成（${completedCount}）`;
+    clearCompleted.hidden = !completedCount;
     clearCompleted.disabled = !completedCount || state.unavailable || state.status === 'preparing' || state.phase === 'resuming';
+    addButton.className = state.tasks.length === 0 ? 'primary' : '';
+    addButton.title = running ? '暂停后可添加专区' : '';
     runButton.textContent = running ? '暂停' : state.status === 'complete' ? '已完成' : hasStarted ? '继续' : '开始';
+    runButton.className = !running && state.status !== 'complete' ? 'primary' : '';
     runButton.disabled = starting || (!running && cannotStart); toggle.disabled = false;
     for (const control of busy) control.disabled = true;
   }
   const unsubscribe = controller.subscribe(render);
-  const panel = { open() { setOpen(true); }, destroy() { unsubscribe(); host.remove(); } };
+  const panel = { open() { setOpen(true); }, destroy() { clearTimers(); unsubscribe(); host.remove(); } };
   host.wdPanel = panel; document.documentElement.append(host); render(controller.getState());
   return panel;
 }
