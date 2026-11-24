@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         网大助手
 // @namespace    wangda-assistant
-// @version      0.1.0-beta.15
+// @version      0.1.0-beta.16
 // @updateURL    https://raw.githubusercontent.com/ka1er/wangda-assistant/refs/heads/beta-channel/dist/wangda-assistant.user.js
 // @downloadURL  https://raw.githubusercontent.com/ka1er/wangda-assistant/refs/heads/beta-channel/dist/wangda-assistant.user.js
 // @description  手动勾选课程、管理多专区任务队列，按平台完成状态连续学习
@@ -122,6 +122,7 @@ function decideLearningAction(snapshot, task) {
   if (task?.status !== 'running') return { type: 'idle', reason: '任务未运行。' };
   if (snapshot?.kind === 'login') return { type: 'manual', reason: '请先完成登录。' };
   if (snapshot?.kind !== 'course') return { type: 'wait', reason: '等待进入目标课程。' };
+  if (snapshot.sectionListReady === false) return { type: 'wait', reason: snapshot.sectionListReason || '等待课节清单加载完成。' };
   const sections = Array.isArray(snapshot.sections) ? snapshot.sections.filter(Boolean) : [];
   if (!sections.length) return { type: 'wait', reason: '等待识别课程课节。' };
   const active = snapshot.activeSectionId != null
@@ -149,6 +150,7 @@ const wdAdapterSubjectRelearnPattern = new RegExp(`^#/study/subject-middle/(${wd
 const wdAdapterCourseRelearnPattern = new RegExp(`^#/study/course-middle/(${wdAdapterIdPattern})/(1|2)$`, 'u');
 
 const wdAdapterLegacyLayout = {
+  name: 'legacy',
   card: '.content.new',
   controls: '.content.new .img.course-item [id*="studyBtns-"], .content.new .img.course-item [id*="studyBtn-"]',
   title: '.title',
@@ -157,12 +159,14 @@ const wdAdapterLegacyLayout = {
 };
 const wdAdapterCatalogLayouts = [
   {
+    name: 'catalog-grid',
     groupClass: 'catalog-state-info2',
     card: '.item.course-item',
     controls: ':scope > .item.course-item > .img > .img-cont > a[id*="studyBtn-"]',
     title: ':scope > .title2 > .title-clamp-2',
   },
   {
+    name: 'catalog-list',
     groupClass: 'catalog-state-info',
     card: '.item.course-item',
     controls: ':scope > .item.course-item > .operation > a[id*="studyBtn-"]',
@@ -172,8 +176,12 @@ const wdAdapterCatalogLayouts = [
   },
 ];
 const wdAdapterCatalogGroupSelector = '.subject-detail-page .subject-detail-main > section.section[data-dynamic-key="content"] '
-  + '.subject-catalog > ul > li > [id*="sectionDiv-"] > '
+  + '.subject-catalog > ul > li '
   + `:is(${wdAdapterCatalogLayouts.map(layout => `.${layout.groupClass}`).join(', ')})`;
+const wdAdapterLoadingSelector = '.loading, .spinner, .skeleton, .el-loading-mask, .ant-spin, [aria-busy="true"], [data-loading="true"], [data-sections-ready="false"], [data-loaded="false"]';
+const wdAdapterEmptySelector = '.empty, .no-data, .no-result, .no-course, .search-empty, [data-empty="true"]';
+const wdAdapterLoadingTextPattern = /^(?:正在加载|加载中|数据加载中|努力加载中)[.。…]*$/u;
+const wdAdapterEmptyTextPattern = /^(?:暂无(?:数据|结果|课程|内容|课节)|没有(?:找到|匹配|相关)?(?:数据|结果|课程|内容|课节)|未找到相关(?:专题|课程|内容)|搜索结果为空)[!！。.]*$/u;
 
 function wdAdapterText(element) {
   return (element?.textContent || '').trim();
@@ -215,16 +223,137 @@ function wdAdapterSubjectCards(root, layout) {
   return [...root.querySelectorAll(layout.controls)].map(element => ({ element, card: element.closest(layout.card), layout }));
 }
 
+function wdAdapterCompareOrder(a, b) {
+  if (a === b) return 0;
+  const pos = a.compareDocumentPosition(b);
+  if (pos & 4) return -1;
+  if (pos & 2) return 1;
+  return 0;
+}
+
+function wdAdapterPositiveInt(value) {
+  if (typeof value !== 'string' || !/^\d+$/u.test(value.trim())) return null;
+  const parsed = Number(value.trim());
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function wdAdapterHasTextIndicator(root, pattern) {
+  if (!root) return false;
+  const skipSelector = '#wangda-assistant, script, style, .qcontent, .title, .title2, .title-clamp-2, .title-wrapper, .text-overflow, .search-page-title';
+  const nodes = [root, ...root.querySelectorAll('*')];
+  for (const node of nodes) {
+    if (!wdAdapterVisible(node) || node.closest(skipSelector)) continue;
+    const hasBlockChild = [...node.children].some(child => wdAdapterVisible(child) && !['SPAN', 'I', 'SMALL', 'B', 'EM', 'STRONG'].includes(child.tagName));
+    if (hasBlockChild) continue;
+    const text = wdAdapterText(node);
+    if (text && text.length <= 40 && pattern.test(text)) return true;
+  }
+  return false;
+}
+
+function wdAdapterHasLoadingIndicator(root) {
+  if (!root) return false;
+  if (root.matches?.(wdAdapterLoadingSelector) && wdAdapterVisible(root)) return true;
+  for (const node of root.querySelectorAll(wdAdapterLoadingSelector)) {
+    if (!node.closest('#wangda-assistant') && wdAdapterVisible(node)) return true;
+  }
+  return wdAdapterHasTextIndicator(root, wdAdapterLoadingTextPattern);
+}
+
+function wdAdapterHasEmptyIndicator(root) {
+  if (!root) return false;
+  if (root.matches?.(wdAdapterEmptySelector) && wdAdapterVisible(root)) return true;
+  for (const node of root.querySelectorAll(wdAdapterEmptySelector)) {
+    if (!node.closest('#wangda-assistant') && wdAdapterVisible(node)) return true;
+  }
+  return wdAdapterHasTextIndicator(root, wdAdapterEmptyTextPattern);
+}
+
+function wdAdapterHasUnrecognizedContent(root) {
+  if (!root) return false;
+  const skip = '#wangda-assistant, script, style, link, meta, title, .subject-banner, .banner-info, section[data-dynamic-key="introduce"]';
+  for (const node of root.querySelectorAll('a, button, li, article, h1, h2, h3, h4, p, [class*="course"], [class*="item"], [class*="card"]')) {
+    if (node.closest(skip) || !wdAdapterVisible(node)) continue;
+    if (wdAdapterText(node) || ['A', 'BUTTON', 'IMG'].includes(node.tagName)) return true;
+  }
+  return false;
+}
+
 function wdAdapterSubjectCatalog(document) {
+  const subjectPages = [...document.querySelectorAll('.subject-detail-page')].filter(wdAdapterVisible);
+  const subjectMains = [...document.querySelectorAll('.subject-detail-page .subject-detail-main')].filter(wdAdapterVisible);
   const groups = [...document.querySelectorAll(wdAdapterCatalogGroupSelector)].filter(wdAdapterVisible);
-  if (!groups.length) return { cards: wdAdapterSubjectCards(document, wdAdapterLegacyLayout), introTitle: '' };
-  const main = groups[0].closest('.subject-detail-main');
-  const intro = main.querySelector(':scope > section.section[data-dynamic-key="introduce"] > [data-region] > .title-row > .h3');
-  const cards = groups.filter(group => group.closest('.subject-detail-main') === main).flatMap(group => {
+  let introTitle = '';
+  for (const main of subjectMains) {
+    const intro = main.querySelector(':scope > section.section[data-dynamic-key="introduce"] > [data-region] > .title-row > .h3');
+    if (intro && wdAdapterVisible(intro)) {
+      introTitle = wdAdapterTitle(intro);
+      if (introTitle) break;
+    }
+  }
+  const catalogCards = [];
+  const matchedLayouts = new Set();
+  const hiddenCards = new Set();
+  let emptyCatalogGroups = 0;
+  for (const group of groups) {
     const layout = wdAdapterCatalogLayouts.find(item => group.classList.contains(item.groupClass));
-    return wdAdapterSubjectCards(group, layout).filter(({ card }) => wdAdapterVisible(card));
-  });
-  return { cards, introTitle: intro && wdAdapterVisible(intro) ? wdAdapterTitle(intro) : '' };
+    const found = wdAdapterSubjectCards(group, layout);
+    const visible = [];
+    for (const entry of found) {
+      if (wdAdapterVisible(entry.card)) visible.push(entry);
+      else if (entry.card) hiddenCards.add(entry.card);
+    }
+    if (!visible.length) {
+      emptyCatalogGroups += 1;
+      continue;
+    }
+    matchedLayouts.add(layout.name);
+    catalogCards.push(...visible);
+  }
+  const scopedLegacyCards = [];
+  const seenLegacyEl = new Set();
+  for (const pageRoot of subjectPages) {
+    for (const entry of wdAdapterSubjectCards(pageRoot, wdAdapterLegacyLayout)) {
+      if (seenLegacyEl.has(entry.element)) continue;
+      seenLegacyEl.add(entry.element);
+      if (!wdAdapterVisible(entry.card)) { if (entry.card) hiddenCards.add(entry.card); continue; }
+      scopedLegacyCards.push(entry);
+    }
+  }
+  if (scopedLegacyCards.length) matchedLayouts.add(wdAdapterLegacyLayout.name);
+  let cards = [...catalogCards, ...scopedLegacyCards].sort((a, b) => wdAdapterCompareOrder(a.element, b.element));
+  if (!cards.length) {
+    const docLegacy = wdAdapterSubjectCards(document, wdAdapterLegacyLayout);
+    const visibleDocLegacy = [];
+    for (const entry of docLegacy) {
+      if (wdAdapterVisible(entry.card)) visibleDocLegacy.push(entry);
+      else if (entry.card) hiddenCards.add(entry.card);
+    }
+    if (visibleDocLegacy.length) {
+      cards = visibleDocLegacy;
+      matchedLayouts.add(wdAdapterLegacyLayout.name);
+    }
+  }
+  const hiddenCardCount = hiddenCards.size;
+  const fallbackToLegacy = Boolean(groups.length && !catalogCards.length && cards.length);
+  const hasCatalogContainer = Boolean(
+    groups.length
+    || [...document.querySelectorAll('.subject-detail-page .subject-detail-main > section.section[data-dynamic-key="content"], .subject-catalog')].some(wdAdapterVisible)
+  );
+  const hasSubjectPage = Boolean(subjectPages.length || subjectMains.length || hasCatalogContainer);
+  return {
+    cards,
+    introTitle,
+    catalogMeta: {
+      layouts: [...matchedLayouts],
+      catalogGroups: groups.length,
+      emptyCatalogGroups,
+      fallbackToLegacy,
+      hiddenCardCount,
+      hasSubjectPage,
+      hasCatalogContainer,
+    },
+  };
 }
 
 function wdAdapterCourseTitle(card, layout) {
@@ -255,6 +384,7 @@ function wdAdapterSafeSubjectLink(document, href) {
 }
 
 function wdAdapterVisible(element) {
+  if (!element) return false;
   const win = element.ownerDocument.defaultView;
   for (let current = element; current; current = current.parentElement) {
     if (current.hidden || current.getAttribute('aria-hidden') === 'true' || current.classList.contains('hidden') || (current.tagName === 'DIALOG' && !current.hasAttribute('open'))) return false;
@@ -262,6 +392,142 @@ function wdAdapterVisible(element) {
     if (style && (style.display === 'none' || ['hidden', 'collapse'].includes(style.visibility) || style.opacity === '0')) return false;
   }
   return element.isConnected;
+}
+
+function wdAdapterMediaHasBinding(media, attrName, expected) {
+  if (!media || !expected) return false;
+  const docBody = media.ownerDocument?.body;
+  for (let current = media; current && current !== docBody; current = current.parentElement) {
+    const value = wdAdapterAttribute(current, attrName);
+    if (value !== null && value === expected) return true;
+  }
+  return false;
+}
+
+function wdAdapterResolveMedia(document, page) {
+  const all = [...document.querySelectorAll('video,audio')];
+  const visible = all.filter(wdAdapterVisible);
+  if (!visible.length) return { status: 'none', target: null, count: 0, totalCount: all.length, tag: null, reason: all.length ? 'only-hidden-media' : 'no-media' };
+  if (visible.length === 1) return { status: 'resolved', target: visible[0], count: 1, totalCount: all.length, tag: visible[0].tagName.toLowerCase(), reason: 'single-visible' };
+  if (page?.kind === 'course') {
+    const activeId = page.activeSectionId;
+    const activeEl = activeId ? wdAdapterSectionElements(document).find(element => wdAdapterSectionId(element) === activeId && wdAdapterAttribute(element, 'course-id') === page.courseId) : null;
+    const activeResourceId = activeEl ? wdAdapterAttribute(activeEl, 'resource-id') : null;
+    if (activeId || activeResourceId) {
+      const sectionBound = visible.filter(media => wdAdapterMediaHasBinding(media, 'section-id', activeId) || wdAdapterMediaHasBinding(media, 'resource-id', activeResourceId));
+      if (sectionBound.length === 1) {
+        return { status: 'resolved', target: sectionBound[0], count: visible.length, totalCount: all.length, tag: sectionBound[0].tagName.toLowerCase(), reason: 'section-bound' };
+      }
+    }
+    if (page.courseId) {
+      const courseBound = visible.filter(media => wdAdapterMediaHasBinding(media, 'course-id', page.courseId));
+      if (courseBound.length === 1) {
+        return { status: 'resolved', target: courseBound[0], count: visible.length, totalCount: all.length, tag: courseBound[0].tagName.toLowerCase(), reason: 'course-bound' };
+      }
+    }
+  }
+  return { status: 'ambiguous', target: null, count: visible.length, totalCount: all.length, tag: null, reason: 'multiple-visible-media' };
+}
+
+function wdAdapterExpectedCount(element) {
+  if (!element) return null;
+  for (const name of ['section-count', 'total-sections', 'expected-sections']) {
+    const value = wdAdapterAttribute(element, name);
+    const parsed = wdAdapterPositiveInt(value);
+    if (parsed !== null) return parsed;
+  }
+  return null;
+}
+
+function wdAdapterInspectSectionList(document, page, { stale, invalid, activeCount }) {
+  const containers = [...document.querySelectorAll('.chapter-list.chapter-all')];
+  const container = containers.find(wdAdapterVisible) || containers[0] || null;
+  if (!container) {
+    return {
+      ready: false,
+      confirmed: false,
+      reason: '未找到课节目录容器（.chapter-list.chapter-all）',
+      issue: '',
+      meta: { hasContainer: false, chapters: 0, unloadedChapters: 0, unresolvedDls: 0, loadingIndicator: false, expectedSections: null, hasEmptyMarker: false },
+    };
+  }
+  const side = container.closest('.course-side');
+  const explicitReady = container.getAttribute('data-sections-ready') === 'true' || container.getAttribute('data-loaded') === 'true';
+  const loadingIndicator = Boolean(wdAdapterHasLoadingIndicator(container) || (side && wdAdapterHasLoadingIndicator(side)));
+  const hasEmptyMarker = wdAdapterHasEmptyIndicator(container);
+  const chapterItems = [...container.querySelectorAll(':scope > ul > li')].filter(wdAdapterVisible);
+  const unresolvedDls = [...container.querySelectorAll('ul li dl')].filter(dl => !dl.id.includes('show-sections')).length;
+  let unloadedChapters = 0;
+  let chapterExpectedMismatch = null;
+  for (const li of chapterItems) {
+    const validInChapter = [...li.querySelectorAll('dl[id*="show-sections"]')].filter(dl => {
+      if (wdAdapterAttribute(dl, 'course-id') !== page.courseId) return false;
+      const id = wdAdapterSectionId(dl);
+      const type = Number(wdAdapterAttribute(dl, 'section-type'));
+      return Boolean(id && Number.isInteger(type) && type > 0);
+    }).length;
+    if (validInChapter === 0) unloadedChapters += 1;
+    const chapterExpected = wdAdapterExpectedCount(li);
+    if (chapterExpected !== null && validInChapter < chapterExpected && !chapterExpectedMismatch) {
+      chapterExpectedMismatch = { parsed: validInChapter, expected: chapterExpected };
+    }
+  }
+  const containerExpected = wdAdapterExpectedCount(container) ?? wdAdapterExpectedCount(side);
+  const totalMismatch = containerExpected !== null && page.sections.length < containerExpected;
+  let ready = true;
+  let reason = '';
+  let issue = '';
+  if (loadingIndicator) {
+    ready = false;
+    reason = '课节清单仍在加载中（检测到 .loading/[aria-busy="true"]/[data-sections-ready="false"]）';
+    issue = reason;
+  } else if (stale) {
+    ready = false;
+    reason = `课程页面内容尚未更新：不匹配课节 ${stale} 个`;
+  } else if (invalid) {
+    ready = false;
+    reason = `课节标识或类型无法识别：${invalid} 个`;
+  } else if (unresolvedDls) {
+    ready = false;
+    reason = `课节清单尚未完整加载：存在 ${unresolvedDls} 个未解析课节节点（缺少 id*="show-sections"）`;
+    issue = reason;
+  } else if (!chapterItems.length) {
+    ready = false;
+    reason = '课节目录尚无可见章节项（.chapter-list.chapter-all > ul > li）';
+  } else if (unloadedChapters) {
+    ready = false;
+    reason = `课节清单尚未完整加载：${unloadedChapters} 个章节尚无有效课节条目`;
+    issue = reason;
+  } else if (totalMismatch) {
+    ready = false;
+    reason = `课节清单数量未齐（已解析 ${page.sections.length} / 预期 ${containerExpected}）`;
+    issue = reason;
+  } else if (chapterExpectedMismatch) {
+    ready = false;
+    reason = `章节课节数量未齐（已解析 ${chapterExpectedMismatch.parsed} / 预期 ${chapterExpectedMismatch.expected}）`;
+    issue = reason;
+  } else if (!page.sections.length) {
+    ready = false;
+    reason = '未解析到属于当前课程的课节（data-course-id 匹配 0 个）';
+  } else if (activeCount > 1) {
+    ready = false;
+    reason = '检测到多个活动课节（.focus 不唯一）';
+  }
+  return {
+    ready,
+    confirmed: ready && explicitReady,
+    reason,
+    issue,
+    meta: {
+      hasContainer: true,
+      chapters: chapterItems.length,
+      unloadedChapters,
+      unresolvedDls,
+      loadingIndicator,
+      expectedSections: containerExpected,
+      hasEmptyMarker,
+    },
+  };
 }
 
 function wdAdapterRelearn(document, page) {
@@ -295,11 +561,20 @@ function wdAdapterRelearn(document, page) {
 
 function readPage(document, hash) {
   const page = { ...wdAdapterRoute(hash), title: '', courses: [], candidates: [], sections: [], activeSectionId: null, media: null, relearn: null, issues: [] };
-  if (page.kind === 'unknown') page.issues.push('无法识别当前页面路由');
+  if (page.kind === 'unknown') {
+    page.issues.push('无法识别当前页面路由');
+    page.recognition = {
+      category: 'unsupported-structure',
+      code: 'unknown-route',
+      summary: '不支持的结构',
+      basis: '路由未匹配已知专题/课程/搜索规则（需 #/study/subject/detail/<SID>、#/study/course/detail/... 或 #/search）',
+    };
+  }
   if (page.kind === 'subject') {
     page.title = wdAdapterTitle(document.querySelector('.subject-banner .title-row .h3, .banner-info .title-row .h3'));
     page.subjectTitleSource = page.title ? 'banner' : 'none';
-    const { cards, introTitle } = wdAdapterSubjectCatalog(document);
+    const { cards, introTitle, catalogMeta } = wdAdapterSubjectCatalog(document);
+    page.catalogMeta = catalogMeta;
     if (!page.title && introTitle) {
       page.title = introTitle;
       page.subjectTitleSource = 'intro';
@@ -336,6 +611,83 @@ function readPage(document, hash) {
       if (page.title) page.subjectTitleSource = 'document';
     }
     for (const [type, ids] of ignored) page.issues.push(`已忽略非课程资源：类型 ${/^\d+$/u.test(type) ? type : 'unknown'}，数量 ${ids.size}`);
+    const scopeRoot = document.querySelector('.subject-detail-page') || document.body;
+    const hasLoading = wdAdapterHasLoadingIndicator(scopeRoot);
+    const hasEmpty = wdAdapterHasEmptyIndicator(scopeRoot);
+    if (!page.courses.length && catalogMeta.emptyCatalogGroups > 0 && !ignored.size && !hasEmpty) {
+      page.issues.push(`检测到空壳正文目录组（${catalogMeta.emptyCatalogGroups} 个），且旧卡片回退未发现有效课程`);
+    }
+    if (page.courses.length && page.title) {
+      page.recognition = {
+        category: 'ok',
+        code: 'ok',
+        summary: '已识别',
+        basis: `命中目录布局（${catalogMeta.layouts.join('+') || 'legacy'}），标题来源：${page.subjectTitleSource}`,
+      };
+    } else if (page.courses.length && !page.title) {
+      page.recognition = {
+        category: 'not-ready',
+        code: 'subject-missing-title',
+        summary: '页面未就绪',
+        basis: '已识别课程但未找到专题标题（检查 .subject-banner/.banner-info .title-row .h3、introduce .h3 与 document.title）',
+      };
+    } else if (hasLoading) {
+      page.recognition = {
+        category: 'not-ready',
+        code: 'subject-loading',
+        summary: '页面未就绪',
+        basis: '专题目录仍在加载中（检测到 .loading/[aria-busy="true"]/[data-loading="true"]）',
+      };
+    } else if (ignored.size) {
+      page.recognition = {
+        category: 'zero-results',
+        code: 'subject-only-non-course',
+        summary: '零结果',
+        basis: '已命中已知目录控件，但全部为非课程资源（data-section-type != "10"），可执行课程 0 门',
+      };
+    } else if (catalogMeta.emptyCatalogGroups > 0) {
+      page.recognition = hasEmpty
+        ? {
+          category: 'zero-results',
+          code: 'subject-zero-courses',
+          summary: '零结果',
+          basis: '已命中专题正文目录容器（.catalog-state-info2/.catalog-state-info），页面显示暂无课程且旧卡片回退（.content.new）为 0 门',
+        }
+        : {
+          category: 'not-ready',
+          code: 'subject-empty-catalog-shell',
+          summary: '页面未就绪',
+          basis: `检测到空壳正文目录组（.catalog-state-info2/.catalog-state-info 共 ${catalogMeta.emptyCatalogGroups} 个，内含 0 门课），且旧卡片回退（.content.new）为 0 门`,
+        };
+    } else if (hasEmpty) {
+      page.recognition = {
+        category: 'zero-results',
+        code: 'subject-zero-courses',
+        summary: '零结果',
+        basis: '专题页面显示暂无课程（已知选择器 .catalog-state-info2、.catalog-state-info、.content.new 均 0 门）',
+      };
+    } else if (catalogMeta.hiddenCardCount > 0) {
+      page.recognition = {
+        category: 'not-ready',
+        code: 'subject-cards-hidden',
+        summary: '页面未就绪',
+        basis: `仅检测到隐藏状态的课程卡片（${catalogMeta.hiddenCardCount} 张），尚无可见课程`,
+      };
+    } else if (wdAdapterHasUnrecognizedContent(scopeRoot)) {
+      page.recognition = {
+        category: 'unsupported-structure',
+        code: 'subject-unsupported-structure',
+        summary: '不支持的结构',
+        basis: '页面已有可见内容，但未匹配已知专题目录选择器（.catalog-state-info2、.catalog-state-info 或 .content.new .img.course-item [id*="studyBtn"]）',
+      };
+    } else {
+      page.recognition = {
+        category: 'not-ready',
+        code: 'subject-not-ready',
+        summary: '页面未就绪',
+        basis: '尚未检测到专题主体目录容器（.subject-detail-page/.subject-catalog）或课程卡片（.content.new）',
+      };
+    }
   }
   if (page.kind === 'course') {
     page.title = wdAdapterTitle(document.querySelector('.course-side-title-row .text-overflow'));
@@ -361,14 +713,76 @@ function readPage(document, hash) {
     const active = page.sections.filter(section => section.active);
     if (active.length === 1) page.activeSectionId = active[0].id;
     else if (active.length > 1) page.issues.push('检测到多个活动课节');
-    const players = document.querySelectorAll('video,audio'); const media = players[0];
-    if (media) {
-      page.media = { ended: Boolean(media.ended), paused: Boolean(media.paused) };
+    const sectionList = wdAdapterInspectSectionList(document, page, { stale, invalid, activeCount: active.length });
+    page.sectionListReady = sectionList.ready;
+    page.sectionListConfirmed = sectionList.confirmed;
+    page.sectionListReason = sectionList.reason;
+    if (sectionList.issue) page.issues.push(sectionList.issue);
+    const resolvedMedia = wdAdapterResolveMedia(document, page);
+    page.mediaTarget = { status: resolvedMedia.status, count: resolvedMedia.count, tag: resolvedMedia.tag, reason: resolvedMedia.reason };
+    if (resolvedMedia.status === 'resolved') {
+      const media = resolvedMedia.target;
       const currentTime = media.currentTime, duration = media.duration;
-      page.media.currentTime = players.length === 1 && Number.isFinite(currentTime) && currentTime >= 0 ? currentTime : null;
-      page.media.duration = players.length === 1 && Number.isFinite(duration) && duration > 0 ? duration : null;
+      page.media = {
+        ended: Boolean(media.ended),
+        paused: Boolean(media.paused),
+        currentTime: Number.isFinite(currentTime) && currentTime >= 0 ? currentTime : null,
+        duration: Number.isFinite(duration) && duration > 0 ? duration : null,
+      };
+    } else if (resolvedMedia.status === 'ambiguous') {
+      page.media = { ended: false, paused: true, currentTime: null, duration: null };
+      page.issues.push(`检测到多个原生媒体播放器（${resolvedMedia.count} 个），无法确定当前课节目标播放器`);
+    } else if (active.some(section => [5, 6].includes(section.type))) {
+      page.issues.push('未识别本页媒体播放器');
     }
-    else if (active.some(section => [5, 6].includes(section.type))) page.issues.push('未识别本页媒体播放器');
+    if (sectionList.ready) {
+      if (resolvedMedia.status === 'ambiguous' && active.some(section => [5, 6].includes(section.type))) {
+        page.recognition = {
+          category: 'unsupported-structure',
+          code: 'course-ambiguous-media',
+          summary: '不支持的结构',
+          basis: `检测到多个可见原生媒体播放器（video,audio 共 ${resolvedMedia.count} 个），且未通过 data-section-id/data-resource-id/data-course-id 绑定唯一目标`,
+        };
+      } else {
+        page.recognition = {
+          category: 'ok',
+          code: 'ok',
+          summary: '已识别',
+          basis: '已匹配课节清单（.chapter-list.chapter-all ul li dl[id*="show-sections"]）且结构就绪',
+        };
+      }
+    } else if (!sectionList.meta.hasContainer) {
+      const hasLoading = wdAdapterHasLoadingIndicator(document.body);
+      if (hasLoading || !wdAdapterHasUnrecognizedContent(document.body)) {
+        page.recognition = {
+          category: 'not-ready',
+          code: 'course-not-ready',
+          summary: '页面未就绪',
+          basis: hasLoading ? '课程页仍在加载中（检测到 .loading/[aria-busy="true"]）' : '尚未出现课节目录容器（.chapter-list.chapter-all）',
+        };
+      } else {
+        page.recognition = {
+          category: 'unsupported-structure',
+          code: 'course-unsupported-structure',
+          summary: '不支持的结构',
+          basis: '课程页已有可见内容，但未匹配已知课节目录容器（.chapter-list.chapter-all ul li dl[id*="show-sections"]）',
+        };
+      }
+    } else if (!page.sections.length && sectionList.meta.hasEmptyMarker) {
+      page.recognition = {
+        category: 'zero-results',
+        code: 'course-zero-sections',
+        summary: '零结果',
+        basis: '课节容器 .chapter-list.chapter-all 已就绪，但课程下无可用课节（0 个）',
+      };
+    } else {
+      page.recognition = {
+        category: 'not-ready',
+        code: 'course-section-list-incomplete',
+        summary: '页面未就绪',
+        basis: sectionList.reason || '课节清单尚未完整加载（.chapter-list.chapter-all ul li dl[id*="show-sections"]）',
+      };
+    }
   }
   if (page.kind === 'search') {
     const seen = new Set();
@@ -389,6 +803,81 @@ function readPage(document, hash) {
       seen.add(id);
       page.candidates.push({ id, title: wdAdapterTitle(link), route });
     }
+    const hasInput = Boolean(document.querySelector('input[id$="searchContent"][name="keyword"], input[name="searchContent"]'));
+    const hasButton = Boolean(document.querySelector('i[id$="searchBtn"]'));
+    const resultList = [...document.querySelectorAll('[id$="all-list"]')].find(wdAdapterVisible) || document.querySelector('[id$="all-list"]');
+    const searchLoading = wdAdapterHasLoadingIndicator(resultList || document.body);
+    const searchEmpty = wdAdapterHasEmptyIndicator(resultList || document.body);
+    if (page.candidates.length) {
+      page.recognition = {
+        category: 'ok',
+        code: 'ok',
+        summary: '已识别',
+        basis: '命中搜索结果容器 [id$="all-list"] 中的专题候选',
+      };
+    } else if (searchLoading) {
+      page.recognition = {
+        category: 'not-ready',
+        code: 'search-loading',
+        summary: '页面未就绪',
+        basis: '搜索结果仍在加载中（检测到 .loading/[aria-busy="true"]）',
+      };
+    } else if (!hasInput || !hasButton) {
+      if (resultList && searchEmpty) {
+        page.recognition = {
+          category: 'zero-results',
+          code: 'search-zero-results',
+          summary: '零结果',
+          basis: '搜索结果容器 [id$="all-list"] 显示无匹配结果（0 项）',
+        };
+      } else {
+        page.recognition = {
+          category: 'not-ready',
+          code: 'search-controls-missing',
+          summary: '页面未就绪',
+          basis: '未找到搜索控件（input[id$="searchContent"][name="keyword"] / input[name="searchContent"] 与 i[id$="searchBtn"]）',
+        };
+      }
+    } else if (!resultList) {
+      page.recognition = searchEmpty
+        ? {
+          category: 'zero-results',
+          code: 'search-zero-results',
+          summary: '零结果',
+          basis: '页面显示无搜索结果，且未渲染结果列表 [id$="all-list"]（0 项）',
+        }
+        : {
+          category: 'not-ready',
+          code: 'search-results-container-missing',
+          summary: '页面未就绪',
+          basis: '尚未出现搜索结果容器（[id$="all-list"]）',
+        };
+    } else {
+      const visibleChildren = [...resultList.children].filter(wdAdapterVisible);
+      const rawMatchedNodes = resultList.querySelectorAll('div[id*="openDetail-"], a[href]').length;
+      if (searchEmpty || !visibleChildren.length) {
+        page.recognition = {
+          category: 'zero-results',
+          code: 'search-zero-results',
+          summary: '零结果',
+          basis: '搜索结果容器 [id$="all-list"] 已就绪，但返回 0 条专题候选',
+        };
+      } else if (rawMatchedNodes > 0) {
+        page.recognition = {
+          category: 'zero-results',
+          code: 'search-no-subject-results',
+          summary: '零结果',
+          basis: '搜索结果容器 [id$="all-list"] 仅有非专题条目或非本域专题链接（需 .special-box .section-left span="专题" 或同源 #/study/subject/detail/<SID>），专题候选 0 项',
+        };
+      } else {
+        page.recognition = {
+          category: 'unsupported-structure',
+          code: 'search-unsupported-results',
+          summary: '不支持的结构',
+          basis: '搜索结果容器 [id$="all-list"] 已有可见条目，但未匹配已知专题节点（div[id*="openDetail-"] 或同源 a[href]）',
+        };
+      }
+    }
   }
   page.relearn = wdAdapterRelearn(document, page);
   return page;
@@ -402,9 +891,11 @@ function createAdapter(win) {
     return true;
   };
   const pauseMedia = () => {
-    for (const media of win.document.querySelectorAll('video,audio')) {
-      try { media.pause(); } catch { /* A removed or unavailable media element cannot be paused. */ }
-    }
+    const page = read();
+    if (page.kind !== 'course') return false;
+    const resolved = wdAdapterResolveMedia(win.document, page);
+    if (resolved.status !== 'resolved') return false;
+    try { resolved.target.pause(); return true; } catch { return false; }
   };
   return {
     read,
@@ -463,11 +954,9 @@ function createAdapter(win) {
     muteCurrentMedia(course, runId) {
       const page = read(); const active = page.sections.find(section => section.id === page.activeSectionId);
       if (!runId || page.kind !== 'course' || page.courseId !== course?.id || page.route !== course.route || page.relearn?.manualRequired || !active || active.courseId !== course.id || ![5, 6].includes(active.type) || page.issues.some(issue => !issue.includes('未识别本页媒体播放器'))) return false;
-      let applied = false;
-      for (const media of win.document.querySelectorAll('video,audio')) {
-        try { if (!media.muted) media.muted = true; applied = true; } catch { /* Unavailable players do not prevent the course from loading. */ }
-      }
-      return applied;
+      const resolved = wdAdapterResolveMedia(win.document, page);
+      if (resolved.status !== 'resolved') return false;
+      try { if (!resolved.target.muted) resolved.target.muted = true; return true; } catch { return false; }
     },
     leaveLearning(subjectRoute) {
       if (read().kind !== 'course') return false;
@@ -476,9 +965,12 @@ function createAdapter(win) {
       return true;
     },
     async playCurrentMedia(mute = true) {
-      if (read().kind !== 'course') return false;
-      const media = [...win.document.querySelectorAll('video,audio')].find(item => item.paused && !item.ended);
-      if (!media) return false;
+      const page = read();
+      if (page.kind !== 'course') return false;
+      const resolved = wdAdapterResolveMedia(win.document, page);
+      if (resolved.status !== 'resolved') return false;
+      const media = resolved.target;
+      if (!media.paused || media.ended) return false;
       try { if (mute) media.muted = true; await media.play(); return true; } catch { return false; }
     },
     diagnose() {
@@ -487,8 +979,22 @@ function createAdapter(win) {
       const statuses = { 'not-started': 0, learning: 0, completed: 0, unknown: 0 };
       for (const item of [...page.courses, ...page.sections]) statuses[item.status] += 1;
       for (const section of page.sections) types[section.type] = (types[section.type] || 0) + 1;
-      return { kind: page.kind, courses: page.courses.length, candidates: page.candidates.length, sections: page.sections.length, types, statuses, issues: page.issues,
-        ...(page.kind === 'subject' ? { subjectTitleSource: page.subjectTitleSource } : {}) };
+      return {
+        kind: page.kind, courses: page.courses.length, candidates: page.candidates.length, sections: page.sections.length, types, statuses, issues: page.issues,
+        ...(page.recognition ? { recognition: page.recognition } : {}),
+        ...(page.kind === 'subject' ? {
+          subjectTitleSource: page.subjectTitleSource,
+          catalogLayouts: page.catalogMeta?.layouts || [],
+          emptyCatalogGroups: page.catalogMeta?.emptyCatalogGroups || 0,
+          fallbackToLegacy: Boolean(page.catalogMeta?.fallbackToLegacy),
+          hiddenCardCount: page.catalogMeta?.hiddenCardCount || 0,
+        } : {}),
+        ...(page.kind === 'course' ? {
+          sectionListReady: page.sectionListReady,
+          sectionListReason: page.sectionListReason || '',
+          mediaTarget: page.mediaTarget,
+        } : {}),
+      };
     },
   };
 }
@@ -558,6 +1064,50 @@ function mergeCourses(previous, incoming, selectionMode = 'all-pending') {
 const wdControllerTaskKey = 'wangda-assistant.task';
 const wdControllerLeaseKey = 'wangda-assistant.lease';
 const wdControllerLock = 'wangda-assistant.run';
+const wdControllerEndedConfirmTimeout = 90000;
+
+function wdControllerDescribeRecognitionFailure(page, { stage = 'subject', expectedSubject = null, timedOut = false } = {}) {
+  const prefix = timedOut ? '加载超时' : '识别失败';
+  if (!page || page.kind === 'unknown') {
+    const basis = page?.recognition?.basis || '路由未匹配已知专题/课程/搜索规则（需 #/study/subject/detail/<SID>、#/study/course/detail/... 或 #/search）';
+    return `${prefix}（不支持的结构）：当前页面路由无法识别。依据：${basis}。请点击“页面诊断”核对。`;
+  }
+  if (stage === 'search-page' || stage === 'results') {
+    if (page.kind !== 'search') {
+      return `${prefix}（页面未就绪）：尚未处于专题搜索页（当前类型：${page.kind}，需 #/search）。请手动打开专题后读取，或点击“页面诊断”核对。`;
+    }
+    const rec = page.recognition;
+    if (rec?.category === 'zero-results') return `${timedOut ? '搜索结束' : '识别失败'}（零结果）：未找到匹配专题候选。依据：${rec.basis}。请核对关键词或手动打开专题后读取，可点击“页面诊断”核对。`;
+    if (rec?.category === 'unsupported-structure') return `搜索识别失败（不支持的结构）：页面搜索结果结构暂不支持。依据：${rec.basis}。请点击“页面诊断”核对。`;
+    const basis = rec?.basis || (stage === 'search-page'
+      ? '未找到搜索控件（input[id$="searchContent"][name="keyword"] / input[name="searchContent"] 与 i[id$="searchBtn"]）'
+      : '尚未出现搜索结果容器（[id$="all-list"]）或结果仍在加载');
+    return `${prefix}（页面未就绪）：搜索页面或结果尚未就绪。依据：${basis}。请稍后重试或手动打开专题后读取，可点击“页面诊断”核对。`;
+  }
+  if (page.kind !== 'subject') {
+    return `${prefix}（页面未就绪）：当前不在专题详情页（当前类型：${page.kind}，需 #/study/subject/detail/<SID>）。请进入对应专题页后读取，可点击“页面诊断”核对。`;
+  }
+  if (expectedSubject && page.subjectId !== expectedSubject.id) {
+    return `${prefix}（页面未就绪）：当前专题标识与目标专题不一致（需匹配目标专题 SID）。请核对专区后重试，可点击“页面诊断”核对。`;
+  }
+  if (page.courses?.length) {
+    if (!page.title?.trim()) {
+      return '未识别当前专题标题（页面未就绪），已暂停。依据：未从 .subject-banner/.banner-info .title-row .h3、introduce .h3 或 document.title 读到标题。请查看页面诊断后重试读取。';
+    }
+    if (expectedSubject && normalizeTitle(page.title) !== normalizeTitle(expectedSubject.title)) {
+      return '当前专题标题与所选结果不一致，已暂停。依据：专题标题规范化比对不匹配。请核对专区后重试。';
+    }
+  }
+  const rec = page.recognition;
+  if (rec?.category === 'zero-results') {
+    return `${prefix}（零结果）：当前专题未读取到可执行课程。依据：${rec.basis}。请点击“页面诊断”核对。`;
+  }
+  if (rec?.category === 'unsupported-structure') {
+    return `${prefix}（不支持的结构）：当前专题页面结构暂不支持。依据：${rec.basis}。请点击“页面诊断”查看详情。`;
+  }
+  const basis = rec?.basis || '尚未检测到可用专题课程列表（检查 .catalog-state-info2、.catalog-state-info 或 .content.new [id*="studyBtn"]）';
+  return `${prefix}（页面未就绪）：专题标题或课程列表尚未加载完成。依据：${basis}。请等待加载完成后重试，或点击“页面诊断”核对。`;
+}
 
 function createController(options) {
   const { adapter, storage, locks } = options;
@@ -593,6 +1143,9 @@ function createController(options) {
   let pending = null;
   let grace = null;
   let loading = null;
+  let confirmWait = null;
+  let sectionConfirm = null;
+  let lastOwnedPage = null;
   let needOpen = false;
   let ticking = false;
   let mediaPending = null;
@@ -608,7 +1161,7 @@ function createController(options) {
   const listeners = new Set();
   const copy = value => JSON.parse(JSON.stringify(value));
   const isDone = (item, id) => Boolean(item?.done?.includes(id) && !item.recheck?.includes(id));
-  const getState = () => ({ status, phase: restorePending ? 'resuming' : recovery?.network ? 'offline' : recovery ? 'retrying' : status, message, unavailable: blocked, window: copy(record?.window || defaultWindow), automation: copy(record?.automation || defaultAutomation), tasks: copy(record?.tasks || []), activeTaskId: record?.activeTaskId || null, currentCourseId: task?.current || null, currentSectionTitle, currentPlayback: copy(currentPlayback), candidates: copy(candidates), draft: copy(draft), problem: copy(problem) });
+  const getState = () => ({ status, phase: restorePending ? 'resuming' : recovery?.network ? 'offline' : recovery ? 'retrying' : confirmWait ? 'confirming' : status, message, unavailable: blocked, window: copy(record?.window || defaultWindow), automation: copy(record?.automation || defaultAutomation), tasks: copy(record?.tasks || []), activeTaskId: record?.activeTaskId || null, currentCourseId: task?.current || null, currentSectionTitle, currentPlayback: copy(currentPlayback), candidates: copy(candidates), draft: copy(draft), problem: copy(problem) });
   const emit = () => { const state = getState(); for (const listener of listeners) listener(state); };
   const tell = text => { message = text; emit(); return false; };
   const milliseconds = () => now().getTime();
@@ -633,8 +1186,13 @@ function createController(options) {
     if (!task?.current || !task?.subject || record?.activeTaskId !== task.id) return false;
     try {
       const page = adapter.read();
-      return page.kind === 'course' && task.current === page.courseId && task.subject.id === page.subjectId && task.courses.some(course => course.id === page.courseId && course.route === page.route);
-    } catch { return true; /* Stop the last known learning page if its snapshot fails. */ }
+      const owned = page.kind === 'course' && task.current === page.courseId && task.subject.id === page.subjectId && task.courses.some(course => course.id === page.courseId && course.route === page.route);
+      if (owned) lastOwnedPage = { taskId: task.id, courseId: task.current, route: page.route };
+      else if (lastOwnedPage?.taskId === task.id && lastOwnedPage.courseId === task.current) lastOwnedPage = null;
+      return owned;
+    } catch {
+      return Boolean(lastOwnedPage && lastOwnedPage.taskId === task.id && lastOwnedPage.courseId === task.current);
+    }
   };
   const stop = (text, leave = false, complete = false, preserveRun = false) => {
     currentPlayback = null;
@@ -654,13 +1212,19 @@ function createController(options) {
     stopMediaWatch?.(); stopMediaWatch = null;
     if (timer !== null) unschedule(timer);
     timer = null;
-    preparing = pending = grace = loading = recovery = null;
+    preparing = pending = grace = loading = confirmWait = sectionConfirm = recovery = null;
     mediaPending = null;
     if (wasRunning && !complete && task?.current && /人工|播放|媒体已暂停|课节|超时|页面操作未成功|页面读取或操作异常/u.test(text)) problem = { taskId: task.id, courseId: task.current, reason: text };
     status = complete ? 'complete' : 'paused';
     message = text;
     if (wasRunning && ownsCurrentLearningPage()) {
-      try { adapter.pauseMedia(); if (leave) adapter.leaveLearning(task.subject.route); } catch { message += ' 页面操作未能完成，请手动停止学习。'; }
+      try {
+        adapter.pauseMedia();
+        if (leave) {
+          if (adapter.leaveLearning(task.subject.route) === false) message += ' 页面操作未能完成，请手动停止学习。';
+          else lastOwnedPage = null;
+        }
+      } catch { message += ' 页面操作未能完成，请手动停止学习。'; }
     }
     release();
     emit();
@@ -727,7 +1291,7 @@ function createController(options) {
   const collectPage = (page, refreshId = null) => {
     if (page.relearn?.manualRequired) return tell(`遇到“重新学习”提示。${page.relearn.reason} 处理后请重新读取专区。`);
     const existing = refreshId ? record?.tasks.find(item => item.id === refreshId) : null;
-    if (!validPage(page, existing?.subject)) return tell('请进入对应专题课程列表，等待标题和课程加载完成后再读取。');
+    if (!validPage(page, existing?.subject)) return tell(wdControllerDescribeRecognitionFailure(page, { stage: 'subject', expectedSubject: existing?.subject, timedOut: false }));
     if (refreshId) {
       if (!existing) return false;
       existing.courses = mergeCourses(existing.courses, page.courses, existing.selectionMode);
@@ -835,8 +1399,8 @@ function createController(options) {
   };
   const subjectTitleIssue = page => {
     if (preparing?.stage !== 'subject' || page.kind !== 'subject' || page.subjectId !== preparing.candidate.id || !page.courses?.length) return '';
-    if (!page.title?.trim()) return '未识别当前专题标题，已暂停。请查看页面诊断后重试读取。';
-    if (normalizeTitle(page.title) !== normalizeTitle(preparing.candidate.title)) return '当前专题标题与所选结果不一致，已暂停。请核对专区后重试。';
+    if (!page.title?.trim()) return '未识别当前专题标题（页面未就绪），已暂停。依据：未从 .subject-banner/.banner-info .title-row .h3、introduce .h3 或 document.title 读到标题。请查看页面诊断后重试读取。';
+    if (normalizeTitle(page.title) !== normalizeTitle(preparing.candidate.title)) return '当前专题标题与所选结果不一致，已暂停。依据：专题标题规范化比对不匹配。请核对专区后重试。';
     return '';
   };
   const refreshTask = async taskId => {
@@ -899,7 +1463,7 @@ function createController(options) {
     record.activeTaskId = entry.item.id; task = entry.item; task.current = entry.course.id; problem = null; currentSectionTitle = ''; currentPlayback = null;
     record.runRequested = record.automation.enabled;
     if (!persist()) return false;
-    generation += 1; restorePending = false; status = isWithinWindow(now(), record.window) ? 'running' : 'waiting'; needOpen = true; played.clear(); seenPlaying.clear(); resumeAttempts.clear(); retries.clear(); pending = grace = loading = recovery = null;
+    generation += 1; restorePending = false; status = isWithinWindow(now(), record.window) ? 'running' : 'waiting'; needOpen = true; played.clear(); seenPlaying.clear(); resumeAttempts.clear(); retries.clear(); pending = grace = loading = confirmWait = sectionConfirm = recovery = null;
     message = status === 'waiting' ? `等待学习时段 ${record.window.start}—${record.window.end}（北京时间），到时自动继续。` : '正在按平台课节状态连续学习。';
     if (status === 'waiting') waitWindow();
     else { watchMedia(); muteCourse(entry.course); }
@@ -909,7 +1473,11 @@ function createController(options) {
     restorePending = false;
     if (!held && record?.runRequested && !await acquire()) { stop('无法暂停其他标签正在执行的任务，请到执行标签点击暂停。'); return false; }
     if (status !== 'running' && status !== 'preparing' && ownsCurrentLearningPage()) {
-      try { adapter.pauseMedia(); adapter.leaveLearning(task.subject.route); } catch { stop('页面未能停止，请手动退出学习页。'); return false; }
+      try {
+        adapter.pauseMedia();
+        if (adapter.leaveLearning(task.subject.route) === false) { stop('页面未能停止，请手动退出学习页。'); return false; }
+        lastOwnedPage = null;
+      } catch { stop('页面未能停止，请手动退出学习页。'); return false; }
     }
     stop('已暂停，继续学习需手动点击开始。', true); return true;
   };
@@ -922,7 +1490,8 @@ function createController(options) {
     currentPlayback = null;
     if (!fn()) { recover('页面操作未成功。'); return; }
     pending = { ...expectation, since: milliseconds() };
-    loading = null;
+    loading = confirmWait = null;
+    if (expectation.kind === 'course') { sectionConfirm = null; lastOwnedPage = null; }
   };
   const nextCourse = page => {
     currentPlayback = null;
@@ -936,17 +1505,18 @@ function createController(options) {
     generation += 1; mediaPending = null;
     record.activeTaskId = entry.item.id; task = entry.item; task.current = entry.course.id;
     if (!persist()) return;
-    grace = loading = recovery = null; currentSectionTitle = '';
+    grace = loading = confirmWait = sectionConfirm = recovery = null; lastOwnedPage = null; currentSectionTitle = '';
     if (matchesCourse(page, entry.course)) { pending = null; return; }
     action(() => adapter.openCourse(entry.course), { kind: 'course', id: entry.course.id, before: page.route });
   };
   const deferCurrent = reason => {
     if (!verify() || status !== 'running') return;
-    generation += 1; mediaPending = null; pending = grace = loading = recovery = null;
+    generation += 1; mediaPending = null; pending = grace = loading = confirmWait = sectionConfirm = recovery = null;
     const page = adapter.read();
     if (ownsCurrentLearningPage()) {
       adapter.pauseMedia();
       if (adapter.leaveLearning(task.subject.route) === false) { stop('未能退出当前学习页，请手动退出后继续。'); notify(message); return; }
+      lastOwnedPage = null;
     }
     task.deferred = [...(task.deferred || []).filter(item => item.courseId !== task.current), { courseId: task.current, reason }];
     if (!persist()) return;
@@ -959,11 +1529,12 @@ function createController(options) {
     if (!verify() || status !== 'running') return;
     const key = `${task.id}:${task.current}`, attempt = (retries.get(key) || 0) + 1;
     if (attempt > 3) { deferCurrent(`${reason} 已重试三次。`); return; }
-    generation += 1; mediaPending = null; pending = grace = loading = null;
+    generation += 1; mediaPending = null; pending = grace = loading = confirmWait = sectionConfirm = null;
     retries.set(key, attempt);
     if (ownsCurrentLearningPage()) {
       adapter.pauseMedia();
       if (adapter.leaveLearning(task.subject.route) === false) { stop('重试前未能退出学习页，请手动退出后继续。'); notify(message); return; }
+      lastOwnedPage = null;
     }
     recovery = { until: milliseconds() + [5000, 10000, 20000][attempt - 1], attempt, reason, before: adapter.read().route };
     message = `${reason} 正在等待重试 ${attempt}/3。`; emit();
@@ -973,10 +1544,13 @@ function createController(options) {
     stopMediaWatch?.(); stopMediaWatch = null;
     if (!record.automation.enabled) { stop('已到学习时段边界，已停止媒体并退出学习页。', true); return; }
     if (ownsCurrentLearningPage()) {
-      try { adapter.pauseMedia(); if (adapter.leaveLearning(task.subject.route) === false) throw Error(); }
-      catch { stop('学习时段结束，但未能退出学习页，请手动停止。', true); notify(message); return; }
+      try {
+        adapter.pauseMedia();
+        if (adapter.leaveLearning(task.subject.route) === false) throw Error();
+        lastOwnedPage = null;
+      } catch { stop('学习时段结束，但未能退出学习页，请手动停止。', true); notify(message); return; }
     }
-    generation += 1; mediaPending = null; pending = grace = loading = recovery = null; needOpen = true;
+    generation += 1; mediaPending = null; pending = grace = loading = confirmWait = sectionConfirm = recovery = null; needOpen = true;
     played.clear(); seenPlaying.clear(); resumeAttempts.clear();
     status = 'waiting'; message = `等待下次学习时段 ${record.window.start}—${record.window.end}（北京时间），到时自动继续。`; emit();
   };
@@ -1040,10 +1614,11 @@ function createController(options) {
       }
       if (status === 'running' && record.automation.enabled && page.online === false) {
         if (!recovery?.network) {
-          generation += 1; mediaPending = null; pending = grace = loading = null;
+          generation += 1; mediaPending = null; pending = grace = loading = confirmWait = sectionConfirm = null;
           if (ownsCurrentLearningPage()) {
             adapter.pauseMedia();
             if (adapter.leaveLearning(task.subject.route) === false) { stop('断网后未能退出学习页，请手动退出。'); notify(message); return; }
+            lastOwnedPage = null;
           }
           recovery = { network: true, before: adapter.read().route };
           message = '网络已断开，等待网络恢复后继续；当前课程未计为完成。'; emit();
@@ -1054,7 +1629,10 @@ function createController(options) {
         if (preparing.stage === 'subject' && page.relearn?.manualRequired && page.subjectId === preparing.candidate.id && ['subject', 'subject-relearn'].includes(page.kind)) {
           stop(`遇到“重新学习”提示。${page.relearn.reason} 处理后请重新读取专区。`); notify(message); return;
         }
-        if (milliseconds() - preparing.since >= 30000) { stop(subjectTitleIssue(page) || '搜索或专题加载超时，请手动打开专题后读取。'); return; }
+        if (milliseconds() - preparing.since >= 30000) {
+          stop(subjectTitleIssue(page) || wdControllerDescribeRecognitionFailure(page, { stage: preparing.stage, expectedSubject: preparing.candidate || null, timedOut: true }));
+          return;
+        }
         if (preparing.stage === 'search-page' && page.kind === 'search') {
           if (adapter.searchKeyword(target)) preparing = { stage: 'results', since: milliseconds() };
         } else if (preparing.stage === 'results' && page.kind === 'search' && page.candidates?.length) {
@@ -1094,6 +1672,9 @@ function createController(options) {
         }
       }
       if (!matchesCourse(page, current)) {
+        lastOwnedPage = null;
+        sectionConfirm = null;
+        confirmWait = null;
         const entry = nextEntry();
         const next = entry?.course;
         if (isDone(task, current.id) && next && page.subjectId === entry.item.subject?.id && page.courseId === next.id && page.route === next.route) { nextCourse(page); return; }
@@ -1104,27 +1685,53 @@ function createController(options) {
         }
         stop('页面已离开目标课程，请确认后重新开始。'); return;
       }
+      lastOwnedPage = { taskId: task.id, courseId: current.id, route: page.route };
       muteCourse(current);
       if (isDone(task, current.id)) {
         if (!grace || milliseconds() - grace.since >= 6000) nextCourse(page);
         return;
       }
       const sections = page.sections || [];
-      const structuralIssue = page.issues?.some(issue => !issue.includes('未识别本页媒体播放器'));
-      if (structuralIssue || !sections.length || sections.some(item => item.courseId !== current.id) || sections.filter(item => item.active).length > 1) { waitFor('structure', '课程课节尚未可靠加载'); return; }
+      const structuralIssue = page.issues?.some(issue => !issue.includes('媒体播放器'));
+      if (page.sectionListReady === false) {
+        sectionConfirm = null;
+        confirmWait = null;
+        waitFor('section-list', page.sectionListReason || '课节清单尚未加载完成');
+        return;
+      }
+      if (structuralIssue || !sections.length || sections.some(item => item.courseId !== current.id) || sections.filter(item => item.active).length > 1) {
+        sectionConfirm = null;
+        confirmWait = null;
+        waitFor('structure', page.recognition?.basis || '课程课节尚未可靠加载');
+        return;
+      }
       const inScope = sections.filter(item => task.scope === 'all' || item.required);
-      if (inScope.some(item => !['learning', 'not-started', 'completed'].includes(item.status))) { waitFor('status', '课节状态无法识别'); return; }
+      if (inScope.some(item => !['learning', 'not-started', 'completed'].includes(item.status))) {
+        confirmWait = null;
+        waitFor('status', '课节状态无法识别');
+        return;
+      }
+      const sectionKey = `${task.id}:${current.id}`;
+      const sectionIds = sections.map(item => item.id).join(',');
+      if (sectionConfirm?.key === sectionKey && sectionConfirm.ids === sectionIds) sectionConfirm.ticks += 1;
+      else sectionConfirm = { key: sectionKey, ids: sectionIds, ticks: 1 };
+      const sectionListConfirmed = page.sectionListConfirmed === true || sectionConfirm.ticks >= 2;
       const active = sections.find(item => item.id === page.activeSectionId);
-      if (active && (task.scope === 'all' || active.required) && [5, 6].includes(active.type) && page.media) {
+      if (active && (task.scope === 'all' || active.required) && [5, 6].includes(active.type) && page.media && page.mediaTarget?.status !== 'ambiguous') {
         currentPlayback = { taskId: task.id, courseId: current.id, sectionId: active.id, paused: Boolean(page.media.paused), ended: Boolean(page.media.ended),
           currentTime: Number.isFinite(page.media.currentTime) && page.media.currentTime >= 0 ? page.media.currentTime : null,
           duration: Number.isFinite(page.media.duration) && page.media.duration > 0 ? page.media.duration : null };
       }
       currentSectionTitle = active?.title || '';
       const decision = decideLearningAction(page, { status, scope: task.scope });
-      if (decision.type === 'manual') { if (record.automation.enabled) deferCurrent('此课节需要人工处理，请完成后重试。'); else { stop('此课节需要人工处理，请在当前页面完成后再继续。'); notify(message); } return; }
-      if (page.activeSectionId && !active) { waitFor('focus', '当前课节无法确认'); return; }
+      if (decision.type === 'manual') { confirmWait = null; if (record.automation.enabled) deferCurrent('此课节需要人工处理，请完成后重试。'); else { stop('此课节需要人工处理，请在当前页面完成后再继续。'); notify(message); } return; }
+      if (page.activeSectionId && !active) { confirmWait = null; waitFor('focus', '当前课节无法确认'); return; }
       if (decision.type === 'course-complete') {
+        confirmWait = null;
+        if (!sectionListConfirmed) {
+          waitFor('section-list-confirm', '等待确认课节清单加载完成');
+          return;
+        }
         if (!task.done.includes(current.id)) task.done.push(current.id);
         task.recheck = (task.recheck || []).filter(id => id !== current.id);
         if (!persist()) return;
@@ -1132,6 +1739,11 @@ function createController(options) {
         grace = { key: `course:${current.id}`, since: milliseconds() }; loading = null; return;
       }
       if (decision.type === 'select-section') {
+        confirmWait = null;
+        if (!sectionListConfirmed) {
+          waitFor('section-list-confirm', '等待确认课节清单加载完成');
+          return;
+        }
         const key = `${current.id}:${active?.id || ''}:${decision.sectionId}`;
         if (active?.status === 'completed') {
           if (grace?.key !== key) { grace = { key, since: milliseconds() }; return; }
@@ -1143,9 +1755,35 @@ function createController(options) {
       grace = null;
       if (active && ['learning', 'not-started'].includes(active.status)) {
         if ([5, 6].includes(active.type)) {
-          if (!page.media) { waitFor(`player:${active.id}`, '未识别本页媒体播放器'); return; }
+          if (page.mediaTarget?.status === 'ambiguous' || page.issues?.some(issue => issue.includes('多个原生媒体播放器'))) {
+            confirmWait = null;
+            loading = null;
+            const countText = page.mediaTarget?.count ? `（${page.mediaTarget.count} 个）` : '';
+            const reason = `检测到多个原生媒体播放器${countText}，无法确定当前课节目标播放器；已停止自动媒体操作，请检查页面后手动处理。`;
+            if (record.automation.enabled) deferCurrent(reason);
+            else { stop(reason, false); notify(message); }
+            return;
+          }
+          if (!page.media) { confirmWait = null; waitFor(`player:${active.id}`, '未识别本页媒体播放器'); return; }
           loading = null;
           const key = `${task.id}:${current.id}:${active.id}`;
+          if (page.media.ended) {
+            if (mediaPending?.key === key) mediaPending = null;
+            if (confirmWait?.key !== key) {
+              confirmWait = { key, since: milliseconds() };
+              message = '媒体播放已结束，正在等待平台确认课节完成。';
+            } else if (milliseconds() - confirmWait.since >= wdControllerEndedConfirmTimeout) {
+              const reason = '媒体播放结束后平台仍报未完成，等待平台确认超时（90秒）。';
+              confirmWait = null;
+              if (record.automation.enabled) deferCurrent(reason);
+              else { stop(`${reason} 已暂停并退出学习页，请人工核对学时记录。`, true); notify(message); }
+            }
+            return;
+          }
+          if (confirmWait) {
+            confirmWait = null;
+            if (message === '媒体播放已结束，正在等待平台确认课节完成。') message = '正在按平台课节状态连续学习。';
+          }
           if (!page.media.paused) {
             seenPlaying.add(key);
             // Observed playback supersedes any unresolved play request for this section.
@@ -1209,8 +1847,14 @@ function createController(options) {
               } catch { if (generation === token && status === 'running') stop('页面读取或操作异常，已暂停并退出学习页，请人工确认。', true); }
             });
           }
-        } else loading = null;
-      } else waitFor('active', '等待平台确认当前课节');
+        } else {
+          loading = null;
+          if (confirmWait) {
+            confirmWait = null;
+            if (message === '媒体播放已结束，正在等待平台确认课节完成。') message = '正在按平台课节状态连续学习。';
+          }
+        }
+      } else { confirmWait = null; waitFor('active', '等待平台确认当前课节'); }
     } catch { stop('页面读取或操作异常，已暂停，请人工确认。', true); }
     finally { ticking = false; emit(); }
   };
@@ -1222,10 +1866,20 @@ function createController(options) {
     start, pause, retry, skipCurrent, tick,
     diagnose() {
       const diagnostic = adapter.diagnose();
-      if (preparing?.stage === 'subject') {
+      if (preparing) {
         const page = adapter.read();
-        return { ...diagnostic, preparingStage: 'subject', subjectIdMatches: page.kind === 'subject' && page.subjectId === preparing.candidate.id,
-          subjectTitleMatches: Boolean(page.title?.trim()) && normalizeTitle(page.title) === normalizeTitle(preparing.candidate.title) };
+        const extra = { preparingStage: preparing.stage };
+        if (preparing.stage === 'subject') {
+          extra.subjectIdMatches = page.kind === 'subject' && page.subjectId === preparing.candidate.id;
+          extra.subjectTitleMatches = Boolean(page.title?.trim()) && normalizeTitle(page.title) === normalizeTitle(preparing.candidate.title);
+        }
+        const failureHint = subjectTitleIssue(page) || (
+          (preparing.stage === 'subject' && !validPage(page, preparing.candidate))
+          || (preparing.stage !== 'subject' && !(page.kind === 'search' && page.candidates?.length))
+            ? wdControllerDescribeRecognitionFailure(page, { stage: preparing.stage, expectedSubject: preparing.candidate || null, timedOut: false })
+            : ''
+        );
+        return { ...diagnostic, ...extra, ...(failureHint ? { failureHint } : {}) };
       }
       return diagnostic;
     },
@@ -1345,7 +1999,7 @@ function createPanel(win, controller, version) {
     return Boolean(selected.length && (state.currentCourseId ? selected.some(course => course.id === state.currentCourseId && (state.status === 'running' || !isDone(task, course.id)) && !task.skipped.includes(course.id) && !task.deferred?.some(entry => entry.courseId === course.id)) : ['running', 'waiting'].includes(state.status) || state.phase === 'resuming'));
   };
   const sortableTasks = () => latest.tasks.filter(task => !completeTask(task));
-  const phaseLabel = state => ({ paused: '已暂停', preparing: '正在准备', running: '学习中', complete: '已完成', retrying: '正在重试', waiting: '等待学习时段', offline: '等待网络', resuming: '正在恢复' }[state.phase || state.status] || '等待确认');
+  const phaseLabel = state => ({ paused: '已暂停', preparing: '正在准备', running: '学习中', complete: '已完成', retrying: '正在重试', waiting: '等待学习时段', offline: '等待网络', resuming: '正在恢复', confirming: '等待平台确认' }[state.phase || state.status] || '等待确认');
   const playbackFor = (item, courseId) => {
     const value = latest.currentPlayback;
     return currentTask(item) && latest.status === 'running' && !['retrying', 'offline', 'resuming'].includes(latest.phase) && value?.taskId === item.id && value.courseId === courseId ? value : null;
@@ -1535,7 +2189,7 @@ function createPanel(win, controller, version) {
     latest = state;
     const running = isRunning(state);
     const active = state.tasks.find(item => item.id === state.activeTaskId);
-    const labels = { paused: '已暂停', preparing: '正在准备', running: '学习中', complete: '已完成', retrying: '正在重试', waiting: '等待学习时段', offline: '等待网络', resuming: '正在恢复' };
+    const labels = { paused: '已暂停', preparing: '正在准备', running: '学习中', complete: '已完成', retrying: '正在重试', waiting: '等待学习时段', offline: '等待网络', resuming: '正在恢复', confirming: '等待平台确认' };
     const all = state.tasks.reduce((sum, task) => { const c = counts(task); return { done: sum.done + c.done, selected: sum.selected + c.selected, deferred: sum.deferred + c.deferred }; }, { done: 0, selected: 0, deferred: 0 });
     progress.textContent = `${labels[state.phase || state.status] || state.status} · 总完成 ${all.done}/${all.selected} 门${all.deferred ? ` · 待处理 ${all.deferred}` : ''}`;
     compact.textContent = active?.courses.find(course => course.id === state.currentCourseId)?.title || ''; compact.title = compact.textContent; compact.hidden = !body.hidden || !compact.textContent;
@@ -1581,7 +2235,7 @@ function createPanel(win, controller, version) {
 
 
 
-const wdMainVersion = "0.1.0-beta.15";
+const wdMainVersion = "0.1.0-beta.16";
 
 function wdMainBootstrap(win) {
   if (win.location.protocol !== 'https:' || win.location.hostname !== 'wangda.chinamobile.com' || win.top !== win.self) return;

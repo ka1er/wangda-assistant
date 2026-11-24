@@ -257,3 +257,26 @@ test('标题和展开开始按钮共用启动锁，连续点击只启动一次',
   assert.equal(run.disabled,true); assert.equal(root.querySelector('[data-action="start"]').disabled,true); root.querySelector('[data-action="start"]').click(); run.click();
   assert.equal(f.calls.filter(c=>c[0]==='start').length,1); release(true); for(let i=0;i<30;i++)await Promise.resolve(); assert.equal(run.disabled,false); panel.destroy(); f.close();
 });
+
+test('等待平台确认阶段和媒体结束后超时原因在面板清晰可见', async () => {
+  const t = task();
+  const f = fixture({
+    tasks: [t],
+    activeTaskId: 't',
+    currentCourseId: 'a',
+    currentSectionTitle: '视频课节',
+    status: 'running',
+    phase: 'confirming',
+    message: '媒体播放已结束，正在等待平台确认课节完成。',
+    currentPlayback: { taskId: 't', courseId: 'a', sectionId: 's', paused: true, ended: true, currentTime: 120, duration: 120 },
+  });
+  assert.match(f.root.querySelector('header').textContent, /等待平台确认/u);
+  f.panel.open();
+  await f.click('detail-t');
+  assert.match(f.root.querySelector('[data-course="a"]').closest('label').textContent, /等待平台确认完成/u);
+  assert.match(visibleText(f.root), /媒体播放已结束，正在等待平台确认课节完成/u);
+  const timeoutReason = '媒体播放结束后平台仍报未完成，等待平台确认超时（90秒）。已暂停并退出学习页，请人工核对学时记录。';
+  f.emit({ status: 'paused', phase: 'paused', currentPlayback: null, message: timeoutReason, problem: { taskId: 't', courseId: 'a', reason: timeoutReason } });
+  assert.match(f.root.querySelector('[data-problem]').textContent, /等待平台确认超时（90秒）/u);
+  f.close();
+});

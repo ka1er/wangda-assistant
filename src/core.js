@@ -104,6 +104,7 @@ export function decideLearningAction(snapshot, task) {
   if (task?.status !== 'running') return { type: 'idle', reason: '任务未运行。' };
   if (snapshot?.kind === 'login') return { type: 'manual', reason: '请先完成登录。' };
   if (snapshot?.kind !== 'course') return { type: 'wait', reason: '等待进入目标课程。' };
+  if (snapshot.sectionListReady === false) return { type: 'wait', reason: snapshot.sectionListReason || '等待课节清单加载完成。' };
   const sections = Array.isArray(snapshot.sections) ? snapshot.sections.filter(Boolean) : [];
   if (!sections.length) return { type: 'wait', reason: '等待识别课程课节。' };
   const active = snapshot.activeSectionId != null

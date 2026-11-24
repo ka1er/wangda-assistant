@@ -253,3 +253,12 @@ test('课程以外页面不进行课节操作，登录页提示人工', () => {
   }
   assert.equal(decideLearningAction({ kind: 'login' }, running).type, 'manual');
 });
+
+test('课节清单未就绪时即使已解析课节全完成或有下一节也保持等待', () => {
+  const doneOnly = course([section('done', { status: 'completed', active: true })], { sectionListReady: false, sectionListReason: '存在未加载章节' });
+  const resultDone = decideLearningAction(doneOnly, running);
+  assert.equal(resultDone.type, 'wait');
+  assert.match(resultDone.reason, /未加载章节/u);
+  const nextReady = course([section('done', { status: 'completed', active: true }), section('next', { status: 'not-started' })], { sectionListReady: false });
+  assert.equal(decideLearningAction(nextReady, running).type, 'wait');
+});

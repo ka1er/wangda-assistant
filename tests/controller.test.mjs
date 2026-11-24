@@ -108,7 +108,7 @@ test('草稿勾选已完成时未知和未选待学课程保持布尔false且可
 });
 
 test('复查保留done，恢复后重新读取课节，有新增课节则等待完成且不重复累积done', async () => {
-  const f=await ready(fixture()); await f.c.start(); await f.c.tick(); f.page(course([section('doc',1,'completed')])); await f.c.tick();
+  const f=await ready(fixture()); await f.c.start(); await f.c.tick(); f.page(course([section('doc',1,'completed')])); await f.c.tick(); await f.c.tick();
   const id=f.c.getState().tasks[0].id; assert.equal(f.c.getState().status,'complete'); assert.equal(typeof f.c.recheckCompleted,'function');
   assert.equal(await f.c.recheckCompleted(id),true); assert.deepEqual(f.c.getState().tasks[0].done,['c']); assert.deepEqual(f.c.getState().tasks[0].recheck,['c']); assert.equal(f.c.getState().status,'paused');
   const restored=fixture(f.shared); assert.deepEqual(restored.c.getState().tasks[0].recheck,['c']); restored.c.destroy();
@@ -117,14 +117,14 @@ test('复查保留done，恢复后重新读取课节，有新增课节则等待�
 });
 
 test('复查遇人工环节可暂存，完成历史保留但仍属于待处理，运行期间不能修改范围', async () => {
-  const f=await ready(fixture()); await f.c.start(); await f.c.tick(); f.page(course([section('doc',1,'completed')])); await f.c.tick(); const id=f.c.getState().tasks[0].id;
+  const f=await ready(fixture()); await f.c.start(); await f.c.tick(); f.page(course([section('doc',1,'completed')])); await f.c.tick(); await f.c.tick(); const id=f.c.getState().tasks[0].id;
   assert.equal(typeof f.c.recheckCompleted,'function'); await f.c.recheckCompleted(id); await f.c.setAutomation({enabled:true,resumeOnReload:false}); await f.c.start();
   assert.equal(await f.c.setTaskMode(id,'specific'),false); assert.equal(await f.c.recheckCompleted(id),false);
   f.page(course([section('exam',9,'learning')])); await f.c.tick(); assert.equal(f.c.getState().unavailable,false); assert.deepEqual(f.c.getState().tasks[0].done,['c']); assert.equal(f.c.getState().tasks[0].deferred[0].courseId,'c'); assert.match(f.c.getState().message,/待处理/u); f.c.destroy();
 });
 
 test('复查遇人工环节手动跳过及重试均保留原完成历史', async () => {
-  const f=await ready(fixture());await f.c.start();await f.c.tick();f.page(course([section('doc',1,'completed')]));await f.c.tick();const id=f.c.getState().tasks[0].id;
+  const f=await ready(fixture());await f.c.start();await f.c.tick();f.page(course([section('doc',1,'completed')]));await f.c.tick();await f.c.tick();const id=f.c.getState().tasks[0].id;
   await f.c.recheckCompleted(id);await f.c.start();f.page(course([section('exam',9)]));await f.c.tick();assert.equal(f.c.getState().status,'paused');await f.c.skipCurrent();
   assert.deepEqual(f.c.getState().tasks[0].done,['c']);assert.deepEqual(f.c.getState().tasks[0].skipped,['c']);assert.deepEqual(f.c.getState().tasks[0].recheck,['c']);
   await f.c.retry(id,'c');assert.deepEqual(f.c.getState().tasks[0].done,['c']);assert.deepEqual(f.c.getState().tasks[0].recheck,['c']);f.c.destroy();
@@ -170,7 +170,7 @@ test('运行时重排不暂停和切页，当前课程完成后按新顺序进�
   const after=f.c.getState(); assert.equal(after.status,'running'); assert.equal(after.activeTaskId,a.id); assert.equal(after.currentCourseId,'c'); assert.equal(after.currentSectionTitle,before.currentSectionTitle); assert.deepEqual(f.actions,actions); assert.equal(f.shared.locked,true);
   f.page(course([section('doc',1,'completed')])); await f.c.tick(); await elapse(f,6000);
   assert.equal(f.c.getState().activeTaskId,b.id); assert.deepEqual(f.actions.at(-1),['course','z']); assert.deepEqual(f.c.getState().tasks[1].done,['c']);
-  f.page(course([section('z-doc',1,'completed')],{subjectId:'s2',courseId:'z',route:'#/study/course/detail/subject-course/z/6/s2',sections:[{...section('z-doc',1,'completed'),courseId:'z'}]})); await f.c.tick(); await elapse(f,6000);
+  f.page(course([section('z-doc',1,'completed')],{subjectId:'s2',courseId:'z',route:'#/study/course/detail/subject-course/z/6/s2',sections:[{...section('z-doc',1,'completed'),courseId:'z'}]})); await f.c.tick(); await f.c.tick(); await elapse(f,6000);
   assert.equal(f.c.getState().activeTaskId,a.id); assert.deepEqual(f.actions.at(-1),['course','d']); f.c.destroy();
 });
 
@@ -353,7 +353,7 @@ test('相同CID但普通课程路由必须导航到所选专题上下文', async
 });
 test('已观察全课节完成后原生跳到已选下一课可以接续', async () => {
   const f = fixture(); f.page({ courses: [...f.page().courses, { id: 'd', title: '选修', required: false, route: '#/study/course/detail/subject-course/d/6/s' }] }); await ready(f);
-  f.page(course([section('doc', 1, 'completed')])); await f.c.start(); await f.c.tick(); f.page(course([{ ...section('d-doc', 1), courseId: 'd' }], { courseId: 'd', route: '#/study/course/detail/subject-course/d/6/s' })); await f.c.tick(); await f.c.tick(); assert.equal(f.c.getState().status, 'running'); assert.equal(f.c.getState().currentCourseId, 'd'); assert.ok(!f.actions.some(x => Array.isArray(x) && x[0] === 'course')); await f.c.pause();
+  f.page(course([section('doc', 1, 'completed')])); await f.c.start(); await f.c.tick(); await f.c.tick(); f.page(course([{ ...section('d-doc', 1), courseId: 'd' }], { courseId: 'd', route: '#/study/course/detail/subject-course/d/6/s' })); await f.c.tick(); await f.c.tick(); assert.equal(f.c.getState().status, 'running'); assert.equal(f.c.getState().currentCourseId, 'd'); assert.ok(!f.actions.some(x => Array.isArray(x) && x[0] === 'course')); await f.c.pause();
 });
 test('锁不可用、schema无效、写失败均停止且无页面动作', async () => {
   for (const f of [fixture({}, { noLocks: true }), fixture({ 'wangda-assistant.task': { version: 99 } }), fixture({}, { failWrite: true })]) {
@@ -401,7 +401,7 @@ test('异常记录可跳过后继续，跳过绝不当作完成，重试清除sk
   f.page(course([section('exam',3)])); await f.c.start(); await f.c.tick();
   assert.equal(f.c.getState().problem.courseId,'c'); assert.equal(await f.c.skipCurrent(),true);
   const task = f.c.getState().tasks[0]; assert.deepEqual(task.skipped,['c']); assert.deepEqual(task.done,[]);
-  f.page(course([{...section('done',1,'completed'),courseId:'d'}],{courseId:'d',route:'#/study/course/detail/subject-course/d/6/s'})); await f.c.tick();
+  f.page(course([{...section('done',1,'completed'),courseId:'d'}],{courseId:'d',route:'#/study/course/detail/subject-course/d/6/s'})); await f.c.tick(); await f.c.tick();
   assert.equal(f.c.getState().status,'paused'); assert.match(f.c.getState().message,/跳过|未完成/u);
   assert.equal(await f.c.retry(task.id,'c'),true); assert.deepEqual(f.c.getState().tasks[0].skipped,[]); await f.c.pause();
 });
@@ -410,7 +410,7 @@ test('完成第一专区后等待原生宽限，再按顺序进入下一专区�
   const f = await ready(fixture());
   f.page({ subjectId:'s2',title:'第二专题',route:'#/study/subject/detail/s2',courses:[{id:'z',title:'第二专题课程',status:'not-started',required:false,route:'#/study/course/detail/subject-course/z/6/s2'}] });
   await f.c.collectDraft(); await f.c.addDraft(); const second = f.c.getState().tasks[1]; f.actions.length=0;
-  f.page(course([section('doc',1,'completed')])); await f.c.start(); await f.c.tick();
+  f.page(course([section('doc',1,'completed')])); await f.c.start(); await f.c.tick(); await f.c.tick();
   await elapse(f,5000); assert.ok(!f.actions.some(x => Array.isArray(x) && x[0]==='course'));
   await elapse(f,1000); assert.deepEqual(f.actions.find(x => Array.isArray(x) && x[0]==='course'),['course','z']); assert.equal(f.c.getState().activeTaskId,second.id);
   f.page(course([{...section('docz',1),courseId:'z'}],{subjectId:'s2',courseId:'z',route:'#/study/course/detail/subject-course/z/6/s2'})); await f.c.tick();
@@ -419,7 +419,7 @@ test('完成第一专区后等待原生宽限，再按顺序进入下一专区�
 });
 test('刷新显式导航并等待专题id和横幅一致，保留done/skipped/勾选和其他专区', async () => {
   const f = await ready(fixture()); const first = f.c.getState().tasks[0];
-  f.page(course([section('doc',1,'completed')])); await f.c.start(); await f.c.tick(); assert.deepEqual(f.c.getState().tasks[0].done,['c']);
+  f.page(course([section('doc',1,'completed')])); await f.c.start(); await f.c.tick(); await f.c.tick(); assert.deepEqual(f.c.getState().tasks[0].done,['c']);
   await f.c.setSelection(first.id,'c',false); f.page({kind:'home',route:'#/home'}); assert.equal(await f.c.refreshTask(first.id),true);
   assert.deepEqual(f.actions.at(-1),['subject','s']);
   f.page({kind:'subject',subjectId:'s',title:'旧专题',route:'#/study/subject/detail/s',courses:[{id:'d',title:'新课程',required:false,status:'learning',route:'#/study/course/detail/subject-course/d/6/s'}]}); await f.c.tick(); assert.equal(f.c.getState().status,'preparing');
@@ -536,7 +536,7 @@ test('跳过时读取或退出失败保持暂停并提示人工确认，不继�
 });
 
 test('全部完成后添加第二专区有待学课程时回到暂停，需手动开始', async () => {
-  const f = await ready(fixture()); f.page(course([section('done', 1, 'completed')])); await f.c.start(); await f.c.tick(); assert.equal(f.c.getState().status, 'complete');
+  const f = await ready(fixture()); f.page(course([section('done', 1, 'completed')])); await f.c.start(); await f.c.tick(); await f.c.tick(); assert.equal(f.c.getState().status, 'complete');
   f.page({ kind: 'subject', subjectId: 's2', title: '第二专题', route: '#/study/subject/detail/s2', courses: [{ id: 'z', title: '待学课', required: false, status: 'learning', route: '#/study/course/detail/subject-course/z/6/s2' }] });
   f.actions.length = 0; await f.c.collectDraft(); await f.c.addDraft();
   assert.equal(f.c.getState().status, 'paused'); assert.match(f.c.getState().message, /待学|待.*课程/u); assert.match(f.c.getState().message, /手动.*开始/u); assert.deepEqual(f.actions, []);
@@ -544,19 +544,19 @@ test('全部完成后添加第二专区有待学课程时回到暂停，需手�
 test('全部完成后勾选原未学课程时回到暂停，需手动开始', async () => {
   const f = fixture(); f.page({ courses: [...f.page().courses, { id: 'd', title: '未选课程', required: true, status: 'learning', route: '#/study/course/detail/subject-course/d/6/s' }] }); await ready(f);
   const id = f.c.getState().tasks[0].id; await f.c.setSelection(id, 'd', false);
-  f.page(course([section('done', 1, 'completed')])); await f.c.start(); await f.c.tick(); assert.equal(f.c.getState().status, 'complete');
+  f.page(course([section('done', 1, 'completed')])); await f.c.start(); await f.c.tick(); await f.c.tick(); assert.equal(f.c.getState().status, 'complete');
   f.actions.length = 0; assert.equal(await f.c.setSelection(id, 'd', true), true);
   assert.equal(f.c.getState().status, 'paused'); assert.match(f.c.getState().message, /待学|待.*课程/u); assert.match(f.c.getState().message, /手动.*开始/u); assert.deepEqual(f.actions, []);
 });
 test('全部完成后刷新发现新增待学课程时保持暂停并提示手动开始', async () => {
   const f = await ready(fixture()); const id = f.c.getState().tasks[0].id;
-  f.page(course([section('done', 1, 'completed')])); await f.c.start(); await f.c.tick(); assert.equal(f.c.getState().status, 'complete');
+  f.page(course([section('done', 1, 'completed')])); await f.c.start(); await f.c.tick(); await f.c.tick(); assert.equal(f.c.getState().status, 'complete');
   f.actions.length = 0; assert.equal(await f.c.refreshTask(id), true); assert.deepEqual(f.actions, [['subject', 's']]); f.actions.length = 0;
   f.page({ kind: 'subject', subjectId: 's', title: '测试专题', route: '#/study/subject/detail/s', courses: [...f.c.getState().tasks[0].courses, { id: 'd', title: '新增课程', required: false, status: 'learning', route: '#/study/course/detail/subject-course/d/6/s' }] }); await f.c.tick();
   assert.equal(f.c.getState().status, 'paused'); assert.match(f.c.getState().message, /待学|待.*课程/u); assert.match(f.c.getState().message, /手动.*开始/u); assert.deepEqual(f.actions, []);
 });
 test('全部完成后仅修改时间窗口且无待学课程，保留完成状态', async () => {
-  const f = await ready(fixture()); f.page(course([section('done', 1, 'completed')])); await f.c.start(); await f.c.tick(); f.actions.length = 0;
+  const f = await ready(fixture()); f.page(course([section('done', 1, 'completed')])); await f.c.start(); await f.c.tick(); await f.c.tick(); f.actions.length = 0;
   assert.equal(await f.c.setWindow({ start: '10:00', end: '23:00' }), true); assert.equal(f.c.getState().status, 'complete'); assert.deepEqual(f.actions, []);
 });
 
@@ -593,4 +593,158 @@ test('人工暂停保留的同归属学习页可通过显式暂停退出', async
 test('已知活动任务暂停后快照失败，显式暂停仍停止最后已控学习页', async () => {
   const f = await ready(fixture()); f.page(course([section('exam', 3)])); await f.c.start(); await f.c.tick(); f.actions.length = 0;
   f.adapter.read = () => { throw Error('snapshot unavailable'); }; assert.equal(await f.c.pause(), true); assert.deepEqual(f.actions, ['pause', 'leave']);
+});
+
+test('平台先返回已完成子集时不提前写done，补全未完成课节后继续学习并等清单稳定再切节', async () => {
+  const f = await ready(fixture());
+  f.page(course([section('done-1', 1, 'completed', true)]));
+  await f.c.start();
+  await f.c.tick();
+  assert.equal(f.c.getState().status, 'running');
+  assert.deepEqual(f.c.getState().tasks[0].done, []);
+
+  // Platform appends the remaining uncompleted section on the next tick.
+  f.page(course([section('done-1', 1, 'completed', true), section('todo-2', 1, 'not-started', false)]));
+  await f.c.tick();
+  assert.equal(f.c.getState().status, 'running');
+  assert.deepEqual(f.c.getState().tasks[0].done, []);
+  assert.equal(f.actions.some(item => Array.isArray(item) && item[0] === 'section'), false);
+
+  // List stabilizes across consecutive ticks, then completes 6s grace and switches to todo-2.
+  await f.c.tick();
+  await elapse(f, 6000);
+  assert.deepEqual(f.actions.at(-1), ['section', 'todo-2']);
+
+  // Complete todo-2; same section-ID set was already confirmed stable, so course completes cleanly.
+  f.page(course([section('done-1', 1, 'completed', false), section('todo-2', 1, 'completed', true)]));
+  await f.c.tick();
+  assert.equal(f.c.getState().status, 'complete');
+  assert.deepEqual(f.c.getState().tasks[0].done, ['c']);
+  f.c.destroy();
+});
+
+test('课节清单未就绪或持续变动满30秒超时暂停且不误写done', async () => {
+  const f = await ready(fixture());
+  f.page(course([section('only', 1, 'completed')], { sectionListReady: false, sectionListReason: '课节清单尚未完整加载：1 个章节尚无有效课节条目' }));
+  await f.c.start();
+  await f.c.tick();
+  await elapse(f, 29000);
+  assert.equal(f.c.getState().status, 'running');
+  assert.deepEqual(f.c.getState().tasks[0].done, []);
+  await elapse(f, 1000);
+  assert.equal(f.c.getState().status, 'paused');
+  assert.deepEqual(f.c.getState().tasks[0].done, []);
+  assert.match(f.c.getState().message, /章节尚无有效课节.*加载超时/u);
+  assert.equal(f.c.getState().problem?.courseId, 'c');
+  f.c.destroy();
+});
+
+test('手动模式视频结束后平台仍报学习中满90秒触发独立超时并写失败原因，提前完成或续播则清除等待', async () => {
+  const notices = [];
+  const f = await ready(fixture({}, { notify: text => notices.push(text) }));
+  f.page(course([section('v', 5, 'learning', true)], { media: { paused: true, ended: true } }));
+  await f.c.start();
+  await f.c.tick();
+  assert.equal(f.c.getState().status, 'running');
+  assert.equal(f.c.getState().phase, 'confirming');
+  assert.match(f.c.getState().message, /等待平台确认课节完成/u);
+  await elapse(f, 89000);
+  assert.equal(f.c.getState().status, 'running');
+  assert.equal(f.c.getState().problem, null);
+  await elapse(f, 1000);
+  assert.equal(f.c.getState().status, 'paused');
+  assert.deepEqual(f.c.getState().tasks[0].done, []);
+  assert.match(f.c.getState().message, /播放结束后.*等待平台确认超时（90秒）/u);
+  assert.match(f.c.getState().problem?.reason || '', /等待平台确认超时（90秒）/u);
+  assert.ok(f.actions.includes('leave'));
+  assert.equal(notices.length, 1);
+  f.c.destroy();
+
+  // Recovery when playback resumes or platform confirms completion before 90s.
+  const g = await ready(fixture());
+  g.page(course([section('v', 5, 'learning', true)], { media: { paused: true, ended: true } }));
+  await g.c.start();
+  await g.c.tick();
+  assert.equal(g.c.getState().phase, 'confirming');
+  await elapse(f ? 30000 : 30000);
+  g.page(course([section('v', 5, 'completed', true)], { media: { paused: true, ended: true } }));
+  await g.c.tick();
+  assert.equal(g.c.getState().status, 'complete');
+  assert.deepEqual(g.c.getState().tasks[0].done, ['c']);
+  g.c.destroy();
+});
+
+test('活动音视频课节遇多播放器目标不明确时立即停止提示，不操作播放器；归属与离页失败收口正确', async () => {
+  const notices = [];
+  const f = await ready(fixture({}, { notify: text => notices.push(text) }));
+  f.page(course([section('v', 5, 'learning', true)], {
+    media: { paused: true, ended: false, currentTime: null, duration: null },
+    mediaTarget: { status: 'ambiguous', count: 2, tag: null, reason: 'multiple-visible-media' },
+    issues: ['检测到多个原生媒体播放器（2 个），无法确定当前课节目标播放器'],
+  }));
+  await f.c.start();
+  await f.c.tick();
+  assert.equal(f.c.getState().status, 'paused');
+  assert.match(f.c.getState().message, /多个原生媒体播放器（2 个）.*无法确定/u);
+  assert.match(f.c.getState().problem?.reason || '', /多个原生媒体播放器/u);
+  assert.equal(f.actions.includes('play'), false);
+  assert.equal(f.actions.includes('leave'), false);
+  assert.equal(notices.length, 1);
+  f.c.destroy();
+
+  // Confirmed leaving page clears lastOwnedPage, so later snapshot throw does not pause/leave unrelated page.
+  const g = await ready(fixture());
+  g.page(course([section('doc', 1)]));
+  await g.c.start();
+  await g.c.tick();
+  g.page({ kind: 'home', route: '#/home', courseId: null, subjectId: null });
+  await g.c.tick();
+  g.actions.length = 0;
+  g.adapter.read = () => { throw Error('read failed'); };
+  assert.equal(await g.c.pause(), true);
+  assert.deepEqual(g.actions, []);
+  g.c.destroy();
+
+  // Ordinary stop path surfaces explicit warning when leaveLearning returns false.
+  const h = await ready(fixture());
+  h.page(course([section('doc', 1)]));
+  h.adapter.leaveLearning = () => false;
+  await h.c.start();
+  await h.c.tick();
+  await h.c.pause();
+  assert.match(h.c.getState().message, /页面操作未能完成，请手动停止学习/u);
+  h.c.destroy();
+});
+
+test('手工读取与准备超时按零结果、页面未就绪、不支持的结构输出可核对依据并同步诊断', async () => {
+  const cases = [
+    [{ kind: 'subject', subjectId: 's', title: '', route: '#/study/subject/detail/s', courses: [], issues: [], recognition: { category: 'zero-results', code: 'subject-zero-courses', summary: '零结果', basis: '专题页面显示暂无课程（.content.new 均 0 门）' } }, /零结果.*暂无课程/u],
+    [{ kind: 'subject', subjectId: 's', title: '', route: '#/study/subject/detail/s', courses: [], issues: [], recognition: { category: 'not-ready', code: 'subject-empty-catalog-shell', summary: '页面未就绪', basis: '检测到空壳正文目录组（.catalog-state-info2）' } }, /页面未就绪.*空壳正文目录组/u],
+    [{ kind: 'subject', subjectId: 's', title: '', route: '#/study/subject/detail/s', courses: [], issues: [], recognition: { category: 'unsupported-structure', code: 'subject-unsupported-structure', summary: '不支持的结构', basis: '未匹配已知专题目录选择器（.catalog-state-info2/.content.new）' } }, /不支持的结构.*未匹配已知专题目录选择器/u],
+  ];
+  for (const [snapshot, pattern] of cases) {
+    const f = fixture();
+    f.page(snapshot);
+    assert.equal(await f.c.collectDraft(), false);
+    assert.match(f.c.getState().message, pattern);
+    f.c.destroy();
+  }
+
+  for (const [recognition, pattern] of [
+    [{ category: 'zero-results', code: 'search-zero-results', summary: '零结果', basis: '搜索结果容器 [id$="all-list"] 返回 0 条专题候选' }, /零结果.*all-list/u],
+    [{ category: 'not-ready', code: 'search-results-container-missing', summary: '页面未就绪', basis: '尚未出现搜索结果容器（[id$="all-list"]）' }, /页面未就绪.*all-list/u],
+    [{ category: 'unsupported-structure', code: 'search-unsupported-results', summary: '不支持的结构', basis: '未匹配已知专题节点（div[id*="openDetail-"]）' }, /不支持的结构.*openDetail-/u],
+  ]) {
+    const f = fixture();
+    await f.c.search('测试专区');
+    await f.c.tick();
+    f.page({ kind: 'search', candidates: [], recognition });
+    const diag = f.c.diagnose();
+    assert.equal(diag.preparingStage, 'results');
+    assert.match(diag.failureHint, pattern);
+    await elapse(f, 30000);
+    assert.equal(f.c.getState().status, 'paused');
+    assert.match(f.c.getState().message, pattern);
+    f.c.destroy();
+  }
 });

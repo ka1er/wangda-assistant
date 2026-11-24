@@ -22,7 +22,7 @@ function setup(shared = {}, opts = {}) {
 test('自动模式遇人工课节暂存原因并继续下一门，最后汇总而非完成', async () => {
   const f=setup(); await f.ready(); f.lesson(3); await f.c.start(); await f.c.tick();
   let t=f.c.getState().tasks[0]; assert.equal(t.deferred[0].courseId,'a'); assert.match(t.deferred[0].reason,/人工/u); assert.deepEqual(t.done,[]);
-  await f.c.tick(); assert.equal(f.c.getState().currentCourseId,'b'); f.lesson(1,'completed','b'); await f.c.tick();
+  await f.c.tick(); assert.equal(f.c.getState().currentCourseId,'b'); f.lesson(1,'completed','b'); await f.c.tick(); await f.c.tick();
   assert.equal(f.c.getState().status,'paused'); assert.match(f.c.getState().message,/待处理/u); assert.equal(f.notices.length,1);
   assert.equal(f.shared['wangda-assistant.task'].runRequested,false); f.c.destroy();
 });
@@ -136,4 +136,39 @@ test('播放成功与下一次轮询之间普通暂停，静默恢复而不立�
   let plays=0; const f=setup({}, {play:()=>{plays++;return Promise.resolve(true);}}); await f.ready(); f.lesson(5); f.page({media:{paused:true,ended:false}});
   await f.c.start(); await f.c.tick(); for(let i=0;i<4;i++) await Promise.resolve(); await f.c.tick();
   assert.equal(plays,1);assert.equal(f.c.getState().status,'running');await f.elapse(2000);assert.equal(plays,2);assert.ok(!f.actions.includes('leave'));assert.equal(f.notices.length,0);await f.c.pause();
+});
+
+test('自动模式下视频结束后平台持续学习中满90秒暂存明确原因并继续下一门', async () => {
+  const f = setup(); await f.ready(); f.lesson(5, 'learning', 'a');
+  f.page({ media: { paused: true, ended: true } });
+  await f.c.start(); await f.c.tick();
+  assert.equal(f.c.getState().phase, 'confirming');
+  await f.elapse(89000);
+  assert.equal(f.c.getState().status, 'running');
+  assert.deepEqual(f.c.getState().tasks[0].deferred, []);
+  await f.elapse(1000);
+  const deferred = f.c.getState().tasks[0].deferred;
+  assert.equal(deferred.length, 1);
+  assert.equal(deferred[0].courseId, 'a');
+  assert.match(deferred[0].reason, /播放结束后.*等待平台确认超时（90秒）/u);
+  assert.deepEqual(f.c.getState().tasks[0].done, []);
+  assert.equal(f.c.getState().currentCourseId, 'b');
+  assert.ok(f.actions.includes('b'));
+  f.c.destroy();
+});
+
+test('自动模式下遇到无法确定目标的多播放器时写入待处理原因并继续下一门', async () => {
+  const f = setup(); await f.ready(); f.lesson(5, 'learning', 'a');
+  f.page({
+    media: { paused: true, ended: false, currentTime: null, duration: null },
+    mediaTarget: { status: 'ambiguous', count: 2, tag: null, reason: 'multiple-visible-media' },
+    issues: ['检测到多个原生媒体播放器（2 个），无法确定当前课节目标播放器'],
+  });
+  await f.c.start(); await f.c.tick();
+  const deferred = f.c.getState().tasks[0].deferred;
+  assert.equal(deferred.length, 1);
+  assert.equal(deferred[0].courseId, 'a');
+  assert.match(deferred[0].reason, /多个原生媒体播放器/u);
+  assert.equal(f.c.getState().currentCourseId, 'b');
+  f.c.destroy();
 });

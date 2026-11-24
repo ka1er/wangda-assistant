@@ -112,7 +112,7 @@ test('视频延迟创建及初始化开声在轮询前静音，暂停与关闭�
 });
 
 test('实际面板学习中清理上一完成专区，当前视频不断播，全部完成后可清空列表', async () => {
-  const f=setup();f.subject('s',[['a','未开始',true]]);await f.collect();f.subject('s2',[['b','未开始',true]]);await f.collect();f.panel.open();await f.c.start();await f.c.tick();f.course('a');f.complete('doc');await f.c.tick();
+  const f=setup();f.subject('s',[['a','未开始',true]]);await f.collect();f.subject('s2',[['b','未开始',true]]);await f.collect();f.panel.open();await f.c.start();await f.c.tick();f.course('a');f.complete('doc');await f.c.tick();await f.c.tick();
   assert.equal(f.root.querySelector('[data-action="clear-completed"]').disabled,true);await f.elapse(6000);f.course('b',true);await f.c.tick();const media=f.w.document.querySelector('video');let pauses=0;media.pause=()=>{pauses++;};const active=f.c.getState().activeTaskId,route=f.w.location.hash;
   assert.equal(f.root.querySelector('[data-action="clear-completed"]').disabled,false);await f.click('clear-completed');assert.equal(f.c.getState().tasks.length,1);assert.equal(f.c.getState().activeTaskId,active);assert.equal(f.c.getState().status,'running');assert.equal(f.w.location.hash,route);assert.equal(pauses,0);assert.equal(media.muted,true);assert.equal(f.root.querySelectorAll('article').length,1);
   f.complete('v');await f.c.tick();await f.elapse(6000);f.complete('doc');await f.c.tick();assert.equal(f.c.getState().status,'complete');await f.click('clear-completed');assert.deepEqual(f.c.getState().tasks,[]);assert.equal(f.c.getState().currentCourseId,null);assert.equal(f.root.querySelectorAll('article').length,0);assert.equal(f.root.querySelector('[data-action="clear-completed"]').disabled,true);f.close();
@@ -131,7 +131,7 @@ test('指定课程通过筛选手选已完成卡片，刷新不加新课，复�
   const mode=f.root.querySelector('[name="course-mode-draft"]');assert.ok(mode);mode.value='specific';mode.dispatchEvent(new f.w.Event('change'));for(let i=0;i<40;i++)await Promise.resolve();
   assert.deepEqual(f.c.getState().draft.courses.map(c=>c.selected),[false,false]);const filter=f.root.querySelector('[name="course-filter-draft"]');filter.value='课程b';filter.dispatchEvent(new f.w.Event('input'));
   assert.equal(f.root.querySelector('[data-draft] [data-completed]').open,true);await f.change('[data-draft] [data-course="b"]',true);await f.click('add-draft'); const id=f.c.getState().tasks[0].id;
-  await f.click('start');await f.c.tick();assert.match(f.w.location.hash,/subject-course\/b\/6\/s$/u);f.course('b');f.complete('doc');await f.c.tick();assert.equal(f.c.getState().status,'complete');
+  await f.click('start');await f.c.tick();assert.match(f.w.location.hash,/subject-course\/b\/6\/s$/u);f.course('b');f.complete('doc');await f.c.tick();await f.c.tick();assert.equal(f.c.getState().status,'complete');
   await f.click(`detail-${id}`);await f.click(`refresh-${id}`);f.subject('s',[['a','未开始',true],['b','已完成',false],['new','未开始',true]]);await f.c.tick();assert.deepEqual(f.c.getState().tasks[0].courses.map(c=>c.selected),[false,true,false]);
   await f.click(`recheck-${id}`);assert.deepEqual(f.c.getState().tasks[0].done,['b']);assert.equal(f.root.querySelector('[data-action="run-toggle"]').disabled,false);await f.click('run-toggle');await f.c.tick();f.course('b');await f.c.tick();assert.equal(f.c.getState().status,'running');assert.deepEqual(f.c.getState().tasks[0].recheck,['b']);
   f.complete('doc');await f.c.tick();assert.equal(f.c.getState().status,'complete');assert.deepEqual(f.c.getState().tasks[0].done,['b']);assert.deepEqual(f.c.getState().tasks[0].recheck,[]);f.close();
@@ -150,7 +150,7 @@ test('播放期间拖动专区，当前课节保持，下一门进入新优先�
   handle.dispatchEvent(new f.w.Event('dragstart',{bubbles:true,cancelable:true})); target.dispatchEvent(new f.w.MouseEvent('drop',{bubbles:true,cancelable:true,clientY:1})); for(let i=0;i<40;i++)await Promise.resolve();
   assert.equal(f.w.location.hash,route); assert.equal(pauses,0); assert.equal(f.c.getState().status,'running'); assert.equal(f.a.read().activeSectionId,'v'); assert.deepEqual(f.c.getState().tasks.map(t=>t.id),[b.id,a.id]);
   f.complete('v'); await f.c.tick(); await f.elapse(6000); assert.equal(f.a.read().activeSectionId,'doc'); f.complete('doc'); await f.c.tick(); await f.elapse(6000); assert.match(f.w.location.hash,/subject-course\/z\/6\/s2$/u);
-  f.course('z'); f.complete('doc'); await f.c.tick(); await f.elapse(6000); assert.match(f.w.location.hash,/subject-course\/b\/6\/s$/u); assert.deepEqual(f.c.getState().tasks.find(t=>t.id===a.id).done,['a']); f.close();
+  f.course('z'); f.complete('doc'); await f.c.tick(); await f.c.tick(); await f.elapse(6000); assert.match(f.w.location.hash,/subject-course\/b\/6\/s$/u); assert.deepEqual(f.c.getState().tasks.find(t=>t.id===a.id).done,['a']); f.close();
 });
 
 test('搜索点选无标准横幅的自定义专区后显示25门草稿，保留已有任务且核对标签标题', async () => {
@@ -257,8 +257,8 @@ test('收起面板可直接开始、暂停和继续，队列完成后按钮禁�
   const f=setup(); await f.collect(); const run=f.root.querySelector('header [data-action="run-toggle"]'); assert.ok(run);
   assert.equal(f.root.querySelector('.body').hidden,true); assert.equal(run.textContent,'开始'); await f.click('run-toggle'); assert.equal(run.textContent,'暂停');
   await f.c.tick(); f.course('c'); await f.c.tick(); await f.click('run-toggle'); assert.equal(run.textContent,'继续'); assert.equal(f.c.getState().status,'paused'); assert.equal(f.w.location.hash,'#/study/subject/detail/s');
-  await f.click('run-toggle'); assert.equal(run.textContent,'暂停'); await f.c.tick(); f.course('c'); f.complete('doc'); await f.c.tick(); await f.elapse(6000);
-  f.course('d'); f.complete('doc'); await f.c.tick(); assert.equal(f.c.getState().status,'complete'); assert.equal(run.textContent,'已完成'); assert.equal(run.disabled,true); assert.equal(f.root.querySelector('.body').hidden,true); f.close();
+  await f.click('run-toggle'); assert.equal(run.textContent,'暂停'); await f.c.tick(); f.course('c'); f.complete('doc'); await f.c.tick(); await f.c.tick(); await f.elapse(6000);
+  f.course('d'); f.complete('doc'); await f.c.tick(); await f.c.tick(); assert.equal(f.c.getState().status,'complete'); assert.equal(run.textContent,'已完成'); assert.equal(run.disabled,true); assert.equal(f.root.querySelector('.body').hidden,true); f.close();
 });
 
 test('自动模式通过实际面板开启：考试暂存→下一门完成→详情保留原因，互斥错误不抢占', async () => {
@@ -266,8 +266,137 @@ test('自动模式通过实际面板开启：考试暂存→下一门完成→�
   const automatic=f.root.querySelector('[name="automatic"]'); automatic.checked=true; automatic.dispatchEvent(new f.w.Event('change')); for(let i=0;i<40;i++) await Promise.resolve();
   assert.equal(f.c.getState().automation.enabled,true); await f.click('start'); await f.c.tick(); f.course('c'); f.w.document.querySelector('dl').dataset.sectionType='9'; await f.c.tick();
   assert.match(f.w.location.hash,/subject-course\/d\/6\/s$/u); assert.equal(f.c.getState().tasks[0].deferred[0].courseId,'c');
-  f.course('d'); f.complete('doc'); await f.c.tick(); assert.equal(f.c.getState().status,'paused'); assert.match(f.c.getState().message,/待处理/u);
+  f.course('d'); f.complete('doc'); await f.c.tick(); await f.c.tick(); assert.equal(f.c.getState().status,'paused'); assert.match(f.c.getState().message,/待处理/u);
   const task=f.c.getState().tasks[0]; await f.click(`detail-${task.id}`); assert.match(f.root.querySelector(`[data-task-detail="${task.id}"]`).textContent,/待处理.*人工/u);
   await f.click(`retry-${task.id}-c`); await f.c.tick(); f.w.location.hash='#/study/errors/c&1'; await f.c.tick();
   assert.equal(f.c.getState().status,'paused'); assert.match(f.c.getState().message,/其他学习窗口/u); assert.equal(f.w.location.hash,'#/study/errors/c&1'); f.close();
+});
+
+test('端到端：空壳正文目录组回退旧卡片与混合目录读取入队并保留路由', async () => {
+  const gridHtml = readFileSync(new URL('./fixtures/subjects/catalog-grid.html', import.meta.url), 'utf8');
+  const gridBody = new JSDOM(gridHtml);
+  const markup = gridBody.window.document.body.innerHTML;
+  gridBody.window.close();
+  const f = setup();
+  try {
+    f.w.location.hash = '#/study/subject/detail/mixed-s';
+    const root = f.page(markup);
+    for (const item of root.querySelectorAll('.catalog-state-info2 .course-item')) item.remove();
+    root.insertAdjacentHTML('beforeend', '<div class="content new"><div class="img course-item"><button id="studyBtns-legacy1" data-resource-id="legacy1" data-section-type="10"></button></div><span class="title">回退旧课</span><span class="study-status">未开始</span><span class="cont-class-type">必修</span></div>');
+    f.panel.open();
+    await f.click('add');
+    await f.click('collect');
+    assert.deepEqual(f.c.getState().draft.courses.map(item => item.id), ['legacy1']);
+    assert.equal(f.c.getState().draft.courses[0].route, '#/study/course/detail/subject-course/legacy1/6/mixed-s');
+    await f.click('add-draft');
+    assert.equal(f.c.getState().tasks.length, 1);
+  } finally { f.close(); }
+});
+
+test('端到端：课节分批加载（空章节及已完成子集后补未完成课节）不提前标记完成', async () => {
+  const f = setup();
+  try {
+    f.subject('s', [['c', '未开始', true]]);
+    await f.collect();
+    await f.c.start();
+    await f.c.tick();
+    // Phase 1: chapter 1 has 1 completed section, chapter 2 is still empty (unloaded).
+    const container = f.page('<div class="chapter-list chapter-all"><ul><li><dl id="show-sectionsone" data-course-id="c" data-section-type="1" class="focus"><dt><span class="qcontent">第1节</span></dt><dd><div class="item continue pointer"><span>已完成</span></div></dd></dl></li><li id="ch2"><div class="list-title">第2章</div></li></ul></div>');
+    await f.c.tick();
+    await f.c.tick();
+    assert.equal(f.c.getState().status, 'running');
+    assert.deepEqual(f.c.getState().tasks[0].done, []);
+
+    // Phase 2: chapter 2 renders an uncompleted section.
+    container.querySelector('#ch2').insertAdjacentHTML('beforeend', '<dl id="show-sectionstwo" data-course-id="c" data-section-type="1"><dt><span class="qcontent">第2节</span></dt><dd><div class="item start pointer"><span>未开始</span></div></dd></dl>');
+    container.querySelectorAll('dl').forEach(el => el.addEventListener('click', () => { container.querySelectorAll('dl').forEach(x => x.classList.remove('focus')); el.classList.add('focus'); }));
+    await f.c.tick();
+    await f.c.tick();
+    await f.elapse(6000);
+    assert.equal(f.a.read().activeSectionId, 'two');
+    assert.deepEqual(f.c.getState().tasks[0].done, []);
+    f.complete('two');
+    await f.c.tick();
+    assert.equal(f.c.getState().status, 'complete');
+    assert.deepEqual(f.c.getState().tasks[0].done, ['c']);
+  } finally { f.close(); }
+});
+
+test('端到端：视频结束后平台仍报学习中满90秒独立超时，面板展示明确失败原因不卡死', async () => {
+  const f = setup();
+  try {
+    f.subject('s', [['a', '未开始', true], ['b', '未开始', true]]);
+    await f.collect();
+    f.panel.open();
+    await f.c.start();
+    await f.c.tick();
+    f.course('a', true);
+    const video = f.w.document.createElement('video');
+    Object.defineProperties(video, { paused: { value: true, configurable: true }, ended: { value: true, configurable: true } });
+    video.pause = () => {};
+    f.w.document.querySelector('video').replaceWith(video);
+    await f.c.tick();
+    assert.equal(f.c.getState().phase, 'confirming');
+    assert.match(f.root.querySelector('header').textContent, /等待平台确认/u);
+    await f.elapse(90000);
+    assert.equal(f.c.getState().status, 'paused');
+    assert.deepEqual(f.c.getState().tasks[0].done, []);
+    assert.match(f.root.querySelector('[data-problem]').textContent, /等待平台确认超时（90秒）/u);
+  } finally { f.close(); }
+});
+
+test('端到端：多播放器无法确定目标时面板立即可见提示且不触碰任意播放器', async () => {
+  const f = setup();
+  try {
+    f.subject('s', [['a', '未开始', true]]);
+    await f.collect();
+    f.panel.open();
+    await f.c.start();
+    await f.c.tick();
+    f.course('a', true);
+    const audio = f.w.document.createElement('audio');
+    const video = f.w.document.createElement('video');
+    Object.defineProperties(audio, { paused: { value: false, configurable: true }, ended: { value: false, configurable: true } });
+    Object.defineProperties(video, { paused: { value: true, configurable: true }, ended: { value: false, configurable: true } });
+    let plays = 0;
+    let pauses = 0;
+    audio.pause = () => { pauses += 1; };
+    video.pause = () => { pauses += 1; };
+    video.play = async () => { plays += 1; };
+    video.muted = false;
+    audio.muted = false;
+    f.w.document.querySelector('video').replaceWith(video);
+    f.w.document.body.append(audio);
+    await f.c.tick();
+    assert.equal(f.c.getState().status, 'paused');
+    assert.equal(plays, 0);
+    assert.equal(pauses, 0);
+    assert.equal(video.muted, false);
+    assert.equal(audio.muted, false);
+    assert.match(f.root.querySelector('[data-problem]').textContent, /多个原生媒体播放器（2 个）/u);
+  } finally { f.close(); }
+});
+
+test('端到端：手工读取与页面诊断明确区分零结果、页面未就绪与不支持的结构', async () => {
+  const f = setup();
+  try {
+    f.panel.open();
+    await f.click('add');
+    const scenarios = [
+      ['#/study/subject/detail/s', '<div class="subject-detail-page"><div class="empty">暂无课程</div></div>', /零结果/u, 'zero-results'],
+      ['#/study/subject/detail/s', '<div class="subject-detail-page"><div class="loading">加载中</div></div>', /页面未就绪/u, 'not-ready'],
+      ['#/study/subject/detail/s', '<div class="subject-detail-page"><article class="v3-item"><a href="#/x">未知卡片</a></article></div>', /不支持的结构/u, 'unsupported-structure'],
+    ];
+    for (const [route, html, messagePattern, category] of scenarios) {
+      f.w.location.hash = route;
+      f.page(html);
+      await f.click('collect');
+      assert.match(f.c.getState().message, messagePattern);
+      assert.match(f.root.querySelector('.status').textContent, messagePattern);
+      await f.click('diagnose');
+      const diag = JSON.parse(f.root.querySelector('pre').textContent);
+      assert.equal(diag.recognition.category, category);
+      assert.ok(diag.recognition.basis);
+    }
+  } finally { f.close(); }
 });

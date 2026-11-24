@@ -308,17 +308,21 @@ test('旧课节和非课程页面不能选择课节', () => {
 });
 
 test('暂停本页原生媒体并离开课程页，不访问iframe媒体', () => {
-  const { window } = dom('<video></video><audio></audio><iframe src="about:blank"></iframe>');
-  const calls = [];
-  for (const media of window.document.querySelectorAll('video,audio')) media.pause = () => calls.push(media.tagName);
-  const adapter = createAdapter(window);
-  assert.equal(adapter.leaveLearning(subjectRoute), true);
-  assert.deepEqual(calls, ['VIDEO', 'AUDIO']);
-  assert.equal(window.location.hash, subjectRoute);
-  assert.equal(adapter.leaveLearning(subjectRoute), false);
-  window.location.hash = courseRoute;
-  assert.equal(adapter.leaveLearning('javascript:alert(1)'), true);
-  assert.equal(window.location.hash, '#/home');
+  for (const [tag, expected] of [['<video></video>', 'VIDEO'], ['<audio></audio>', 'AUDIO']]) {
+    const { window } = dom(`${tag}<iframe src="about:blank"></iframe>`);
+    const calls = [];
+    const media = window.document.querySelector('video,audio');
+    media.pause = () => calls.push(media.tagName);
+    const adapter = createAdapter(window);
+    assert.equal(adapter.leaveLearning(subjectRoute), true);
+    assert.deepEqual(calls, [expected]);
+    assert.equal(window.location.hash, subjectRoute);
+    assert.equal(adapter.leaveLearning(subjectRoute), false);
+    window.location.hash = courseRoute;
+    assert.equal(adapter.leaveLearning('javascript:alert(1)'), true);
+    assert.equal(window.location.hash, '#/home');
+    window.close();
+  }
 });
 
 test('播放只对暂停且未结束媒体尝试一次，失败返回false', async () => {
@@ -342,19 +346,21 @@ test('播放只对暂停且未结束媒体尝试一次，失败返回false', asy
 });
 
 test('目标音视频持续静音，初始化重置声音后重新应用且保持原音量', () => {
-  const {window}=dom(chapters(section('one',{active:true,type:5}))+'<video></video><audio></audio>');const a=createAdapter(window);const target={id:'course-1',route:courseRoute};const video=window.document.querySelector('video');video.volume=.6;
-  assert.equal(typeof a.muteCurrentMedia,'function');assert.equal(a.muteCurrentMedia(target,'run-1'),true);assert.equal(video.muted,true);assert.equal(window.document.querySelector('audio').muted,true);assert.equal(video.volume,.6);
-  video.muted=false;a.muteCurrentMedia(target,'run-1');assert.equal(video.muted,true);assert.equal(video.volume,.6);
-  const next=window.document.createElement('video');window.document.body.append(next);a.muteCurrentMedia(target,'run-1');assert.equal(next.muted,true);assert.equal(video.muted,true);
-  window.document.querySelector('dl').id='D597show-sectionstwo';a.muteCurrentMedia(target,'run-1');assert.equal(video.muted,true);video.muted=false;a.muteCurrentMedia(target,'run-2');assert.equal(video.muted,true);window.close();
+  for (const tag of ['video', 'audio']) {
+    const {window}=dom(chapters(section('one',{active:true,type:5}))+`<${tag}></${tag}>`);const a=createAdapter(window);const target={id:'course-1',route:courseRoute};const media=window.document.querySelector(tag);media.volume=.6;
+    assert.equal(typeof a.muteCurrentMedia,'function');assert.equal(a.muteCurrentMedia(target,'run-1'),true);assert.equal(media.muted,true);assert.equal(media.volume,.6);
+    media.muted=false;a.muteCurrentMedia(target,'run-1');assert.equal(media.muted,true);assert.equal(media.volume,.6);
+    const next=window.document.createElement(tag);media.replaceWith(next);a.muteCurrentMedia(target,'run-1');assert.equal(next.muted,true);
+    window.document.querySelector('dl').id='D597show-sectionstwo';a.muteCurrentMedia(target,'run-1');assert.equal(next.muted,true);next.muted=false;a.muteCurrentMedia(target,'run-2');assert.equal(next.muted,true);window.close();
+  }
 });
 
 test('媒体加载和播放事件捕获非冒泡事件，新媒体插入触发检查，卸载后不再触发', async () => {
   const {window}=dom(chapters(section('one',{active:true,type:5}))+'<video></video>');const a=createAdapter(window);const video=window.document.querySelector('video');let checks=0;
   assert.equal(typeof a.watchCurrentMedia,'function');const unwatch=a.watchCurrentMedia(()=>{checks++;a.muteCurrentMedia({id:'course-1',route:courseRoute},'run');});
   for(const type of ['loadstart','loadedmetadata','play','playing','volumechange']){video.muted=false;video.dispatchEvent(new window.Event(type));assert.equal(video.muted,true,type);}
-  const next=window.document.createElement('video');window.document.body.append(next);await Promise.resolve();assert.equal(next.muted,true);
-  const before=checks;window.document.body.append(window.document.createElement('p'));await Promise.resolve();assert.equal(checks,before);unwatch();unwatch();video.muted=false;video.dispatchEvent(new window.Event('play'));assert.equal(video.muted,false);const last=window.document.createElement('video');window.document.body.append(last);await Promise.resolve();assert.equal(last.muted,false);assert.equal(checks,before);window.close();
+  const next=window.document.createElement('video');video.replaceWith(next);await Promise.resolve();assert.equal(next.muted,true);
+  const before=checks;window.document.body.append(window.document.createElement('p'));await Promise.resolve();assert.equal(checks,before);unwatch();unwatch();next.muted=false;next.dispatchEvent(new window.Event('play'));assert.equal(next.muted,false);const last=window.document.createElement('video');next.replaceWith(last);await Promise.resolve();assert.equal(last.muted,false);assert.equal(checks,before);window.close();
 });
 
 test('静音不操作无关课程、同课不同专区、图文或未知课节以及 iframe', () => {
@@ -498,5 +504,176 @@ test('归档中间页的隐藏或不准确文案不会进入快照', () => {
     assert.ok(page.relearn);
     assert.equal(page.relearn.message, '');
     w.close();
+  }
+});
+
+test('混合目录跨多个主容器遍历图卡、列表和旧卡片并忽略隐藏项', () => {
+  const w = dom(catalog('grid'), subjectRoute).window;
+  try {
+    const listDoc = dom(catalog('list'), subjectRoute).window;
+    const secondMain = listDoc.document.querySelector('.subject-detail-main').cloneNode(true);
+    listDoc.window.close();
+    const subjectPage = w.document.querySelector('.subject-detail-page');
+    subjectPage.append(secondMain);
+    secondMain.insertAdjacentHTML('beforeend', `<ul>${card('legacy-in-page', { title: '旧卡课程', status: '学习中', optional: true })}${card('legacy-hidden', { title: '隐藏旧卡' }).replace('<div class="content new">', '<div class="content new" hidden>')}</ul>`);
+    const page = readPage(w.document, subjectRoute);
+    assert.equal(page.courses.length, 20);
+    assert.equal(page.courses[0].id, 'grid-01');
+    assert.equal(page.courses[12].id, 'grid-13');
+    assert.equal(page.courses[13].id, 'list-01');
+    assert.equal(page.courses[18].id, 'list-06');
+    assert.deepEqual(page.courses[19], {
+      id: 'legacy-in-page',
+      title: '旧卡课程',
+      status: 'learning',
+      required: false,
+      route: `#/study/course/detail/subject-course/legacy-in-page/6/${sid}`,
+    });
+    assert.equal(page.courses.some(item => item.id === 'legacy-hidden'), false);
+    const diagnostic = createAdapter(w).diagnose();
+    assert.deepEqual(diagnostic.catalogLayouts.sort(), ['catalog-grid', 'catalog-list', 'legacy']);
+    assert.equal(diagnostic.fallbackToLegacy, false);
+    assert.equal(diagnostic.hiddenCardCount, 1);
+  } finally { w.close(); }
+});
+
+test('空壳正文目录组回退旧卡片路径，无旧卡时明确报告空壳问题而非无问题', () => {
+  for (const placement of ['body', 'page']) {
+    const w = dom(catalog('grid'), subjectRoute).window;
+    try {
+      for (const item of w.document.querySelectorAll('.catalog-state-info2 .course-item')) item.remove();
+      const host = placement === 'page' ? w.document.querySelector('.subject-detail-page') : w.document.body;
+      host.insertAdjacentHTML('beforeend', `<ul>${card('legacy-ok', { title: '回退课程', status: '未开始' })}</ul>`);
+      const page = readPage(w.document, subjectRoute);
+      assert.equal(page.courses.length, 1);
+      assert.equal(page.courses[0].id, 'legacy-ok');
+      assert.equal(page.title, '示例图卡专题');
+      assert.equal(createAdapter(w).diagnose().fallbackToLegacy, true);
+      assert.equal(createAdapter(w).diagnose().emptyCatalogGroups, 1);
+    } finally { w.close(); }
+  }
+  const emptyShell = dom(catalog('grid'), subjectRoute).window;
+  try {
+    for (const item of emptyShell.document.querySelectorAll('.catalog-state-info2 .course-item')) item.remove();
+    const page = readPage(emptyShell.document, subjectRoute);
+    assert.equal(page.courses.length, 0);
+    assert.ok(page.issues.some(issue => /空壳/u.test(issue)));
+    assert.equal(page.recognition.category, 'not-ready');
+    assert.equal(page.recognition.code, 'subject-empty-catalog-shell');
+    assert.match(page.recognition.basis, /\.catalog-state-info/u);
+  } finally { emptyShell.close(); }
+});
+
+test('旧卡片路径忽略隐藏卡片且保持可见旧卡片兼容', () => {
+  const html = `<title>示例旧专区</title><ul>${card('visible-1', { title: '可见课程' })}${card('hidden-attr').replace('<div class="content new">', '<div class="content new" hidden>')}${card('hidden-style').replace('<div class="content new">', '<div class="content new" style="display:none">')}</ul>`;
+  const w = dom(html, subjectRoute).window;
+  try {
+    const page = readPage(w.document, subjectRoute);
+    assert.deepEqual(page.courses.map(item => item.id), ['visible-1']);
+    assert.equal(page.title, '示例旧专区');
+    assert.equal(createAdapter(w).diagnose().hiddenCardCount, 2);
+  } finally { w.close(); }
+});
+
+test('课节清单完整性校验识别加载中、空章节、未解析节点与数量未齐', () => {
+  const cases = [
+    ['加载标记', `<div class="chapter-list chapter-all" aria-busy="true"><ul><li>${section('a', { status: '已完成', active: true })}</li></ul></div>`, /加载中/u],
+    ['空章节', `<div class="chapter-list chapter-all"><ul><li>${section('a', { status: '已完成', active: true })}</li><li><div class="list-title">第二章</div></li></ul></div>`, /章节尚无有效课节/u],
+    ['未解析节点', `<div class="chapter-list chapter-all"><ul><li>${section('a', { status: '已完成', active: true })}<dl class="placeholder"><dt>占位课节</dt></dl></li></ul></div>`, /未解析课节节点/u],
+    ['总数未齐', `<div class="chapter-list chapter-all" data-section-count="2"><ul><li>${section('a', { status: '已完成', active: true })}</li></ul></div>`, /数量未齐/u],
+  ];
+  for (const [label, html, pattern] of cases) {
+    const w = dom(html, courseRoute).window;
+    try {
+      const page = readPage(w.document, courseRoute);
+      assert.equal(page.sectionListReady, false, label);
+      assert.match(page.sectionListReason, pattern, label);
+      assert.equal(page.recognition.category, 'not-ready', label);
+      assert.equal(createAdapter(w).diagnose().sectionListReady, false, label);
+    } finally { w.close(); }
+  }
+  const readyWin = dom(`<div class="chapter-list chapter-all" data-sections-ready="true" data-section-count="2"><ul><li>${section('a', { status: '已完成', active: true })}${section('b', { status: '未开始' })}</li></ul></div>`, courseRoute).window;
+  try {
+    const page = readPage(readyWin.document, courseRoute);
+    assert.equal(page.sectionListReady, true);
+    assert.equal(page.sectionListConfirmed, true);
+    assert.equal(page.recognition.category, 'ok');
+  } finally { readyWin.close(); }
+});
+
+test('多播放器无唯一归属时拒绝同时操作并明确报错，唯一绑定或隐藏旧播放器时仅操作目标', async () => {
+  const w = dom(chapters(section('video', { active: true, type: 5, status: '学习中' })) + '<audio></audio><video></video>', courseRoute).window;
+  try {
+    const [audio, video] = w.document.querySelectorAll('audio,video');
+    Object.defineProperties(audio, { paused: { value: false, configurable: true }, ended: { value: false, configurable: true } });
+    Object.defineProperties(video, { paused: { value: true, configurable: true }, ended: { value: false, configurable: true } });
+    let plays = 0;
+    const pauses = [];
+    audio.pause = () => pauses.push('audio');
+    video.pause = () => pauses.push('video');
+    video.play = async () => { plays += 1; };
+    audio.play = async () => { plays += 1; };
+    const adapter = createAdapter(w);
+    const snapshot = adapter.read();
+    assert.equal(snapshot.mediaTarget.status, 'ambiguous');
+    assert.equal(snapshot.mediaTarget.count, 2);
+    assert.equal(snapshot.media.paused, true);
+    assert.equal(snapshot.media.currentTime, null);
+    assert.ok(snapshot.issues.some(issue => /多个原生媒体播放器/u.test(issue)));
+    assert.equal(await adapter.playCurrentMedia(false), false);
+    assert.equal(plays, 0);
+    assert.equal(adapter.muteCurrentMedia({ id: 'course-1', route: courseRoute }, 'run-1'), false);
+    assert.equal(audio.muted, false);
+    assert.equal(video.muted, false);
+    assert.equal(adapter.pauseMedia(), false);
+    assert.deepEqual(pauses, []);
+
+    // Bind video explicitly to the active section: all 4 operations target ONLY video.
+    video.setAttribute('data-section-id', 'video');
+    Object.defineProperty(video, 'currentTime', { value: 15, configurable: true });
+    Object.defineProperty(video, 'duration', { value: 60, configurable: true });
+    const bound = adapter.read();
+    assert.equal(bound.mediaTarget.status, 'resolved');
+    assert.equal(bound.mediaTarget.tag, 'video');
+    assert.equal(bound.media.paused, true);
+    assert.equal(bound.media.currentTime, 15);
+    assert.equal(await adapter.playCurrentMedia(false), true);
+    assert.equal(plays, 1);
+    assert.equal(adapter.muteCurrentMedia({ id: 'course-1', route: courseRoute }, 'run-1'), true);
+    assert.equal(video.muted, true);
+    assert.equal(audio.muted, false);
+    assert.equal(adapter.pauseMedia(), true);
+    assert.deepEqual(pauses, ['video']);
+
+    // Hide audio and remove explicit binding: single visible video remains resolved.
+    video.removeAttribute('data-section-id');
+    audio.hidden = true;
+    assert.equal(adapter.read().mediaTarget.status, 'resolved');
+    assert.equal(adapter.pauseMedia(), true);
+    assert.deepEqual(pauses, ['video', 'video']);
+  } finally { w.close(); }
+});
+
+test('识别失败区分零结果、页面未就绪与不支持的结构并输出可核对依据且不泄露敏感信息', () => {
+  const cases = [
+    [subjectRoute, '<div class="subject-detail-page"><div class="empty">暂无课程</div></div>', 'zero-results', /\.content\.new/u],
+    [subjectRoute, '<div class="subject-detail-page"><div class="loading">加载中</div></div>', 'not-ready', /loading/u],
+    [subjectRoute, '<div class="subject-detail-page"><article class="unknown-card"><a href="#/x">内部标题敏感词</a></article></div>', 'unsupported-structure', /\.catalog-state-info2/u],
+    ['#/search', '<input id="D1searchContent" name="keyword"><i id="D1searchBtn"></i><ul id="D1all-list"></ul>', 'zero-results', /all-list/u],
+    ['#/search', '<input id="D1searchContent" name="keyword"><i id="D1searchBtn"></i>', 'not-ready', /all-list/u],
+    ['#/search', '<input id="D1searchContent" name="keyword"><i id="D1searchBtn"></i><ul id="D1all-list"><li class="custom-result">未知卡片</li></ul>', 'unsupported-structure', /openDetail-/u],
+    ['#/study/subject/unknown-variant/1', '<div>未知路由敏感词</div>', 'unsupported-structure', /#\/study\/subject\/detail/u],
+  ];
+  for (const [route, html, category, basisPattern] of cases) {
+    const w = dom(html, route).window;
+    try {
+      const adapter = createAdapter(w);
+      const page = adapter.read();
+      assert.equal(page.recognition.category, category, `${route} ${html}`);
+      assert.match(page.recognition.basis, basisPattern, `${route} ${html}`);
+      const diag = adapter.diagnose();
+      assert.equal(diag.recognition.category, category);
+      assert.equal(JSON.stringify(diag).includes('敏感词'), false);
+    } finally { w.close(); }
   }
 });
