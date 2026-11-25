@@ -803,7 +803,7 @@ export function createPanel(win, controller, version, knowledge = null) {
     const raw = Array.isArray(kgLastResult?.courseData?.sections) ? kgLastResult.courseData.sections : [];
     if (!raw.length) return false;
     if ((kgLastResult?.courseData?.captionedSections || 0) > 0) return true;
-    return raw.some(s => s.hasSubtitle === true || (!s.subtitleChecked && s.hasSubtitle !== false && Boolean(s.captionVtt)));
+    return raw.some(s => s.hasSubtitle === true || (!s.subtitleChecked && s.hasSubtitle !== false));
   };
 
   const syncSectionPicker = () => {

@@ -1939,3 +1939,203 @@ test('跨课程确认缓存隔离：课程 A 的有字幕结果不会污染课�
     dom.window.close();
   }
 });
+
+test('混合课程回退采集与批量 AI 导学：首节无字幕不误禁整课分析，路径 1 与路径 3a 有字幕节全部入导学与导图，路径 3a 并发仅请求一次', async () => {
+  const dom = new JSDOM(`
+    <div class="course-side-title-row"><span class="text-overflow" title="多路径回退混合课">多路径回退混合课</span></div>
+    <div class="chapter-list chapter-all"><ul><li>
+      <dl class="focus" id="D1show-sectionssec-1-nosub" data-sectionType="6" data-courseId="c-fbmix" data-resourceId="att-1">
+        <dt><span class="qcontent" title="第1节 无字幕开场">第1节 无字幕开场</span></dt>
+        <dd><span class="status">学习中</span></dd>
+      </dl>
+      <dl id="D1show-sectionssec-2-vtt" data-sectionType="6" data-courseId="c-fbmix" data-resourceId="att-2">
+        <dt><span class="qcontent" title="第2节 直链字幕核心原理">第2节 直链字幕核心原理</span></dt>
+        <dd><span class="status">已完成</span></dd>
+      </dl>
+      <dl id="D1show-sectionssec-3-404" data-sectionType="6" data-courseId="c-fbmix" data-resourceId="att-3">
+        <dt><span class="qcontent" title="第3节 失效404录屏">第3节 失效404录屏</span></dt>
+        <dd><span class="status">已完成</span></dd>
+      </dl>
+      <dl id="D1show-sectionssec-4-api" data-sectionType="6" data-courseId="c-fbmix" data-resourceId="att-4">
+        <dt><span class="qcontent" title="第4节 接口回退字幕实战">第4节 接口回退字幕实战</span></dt>
+        <dd><span class="status">学习中</span></dd>
+      </dl>
+    </li></ul></div>
+  `, { url: 'https://wangda.chinamobile.com/#/study/course/detail/c-fbmix/6' });
+  try {
+    const win = dom.window;
+    const pageWin = {
+      location: win.location,
+      app: {
+        options: { urlRoot: '/api/v1' },
+        _modules: {
+          'study/course/detail--c-fbmix': {
+            store: {
+              models: {
+                course: {
+                  data: {
+                    id: 'c-fbmix',
+                    name: '多路径回退混合课',
+                    courseChapters: [{
+                      name: '第一章',
+                      courseChapterSections: [
+                        { id: 'sec-1-nosub', name: '第1节 无字幕开场', attachmentId: 'att-1', finishStatus: 1 },
+                        { id: 'sec-2-vtt', name: '第2节 直链字幕核心原理', attachmentId: 'att-2', finishStatus: 2 },
+                        { id: 'sec-3-404', name: '第3节 失效404录屏', attachmentId: 'att-3', finishStatus: 2 },
+                        { id: 'sec-4-api', name: '第4节 接口回退字幕实战', attachmentId: 'att-4', finishStatus: 1 },
+                      ],
+                    }],
+                  },
+                },
+                // Only sec-2 has valid captionVtt; sec-3 has 404 captionVtt; sec-1 & sec-4 have NO captionVtt in trackList (sec-4 recovers via Path 3a!)
+                trackList: {
+                  data: [
+                    { attachmentId: 'att-2', captionVtt: 'https://wangda.chinamobile.com/default/M00/sec2.vtt' },
+                    { attachmentId: 'att-3', captionVtt: 'https://wangda.chinamobile.com/default/M00/sec3-404.vtt' },
+                  ],
+                },
+              },
+            },
+          },
+        },
+      },
+    };
+    saveAiSettings(win, { provider: 'deepseek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', apiKey: 'sk-fbmix', transport: 'fetch' });
+
+    const vttSec2 = `WEBVTT\n\n00:00:10.000 --> 00:00:35.000\n直链字幕讲解服务网格流量治理与零信任双向认证机制。\n`;
+    const vttSec4 = `WEBVTT\n\n00:01:05.000 --> 00:01:40.000\n接口回退字幕讲解灰度发布回滚阈值与全链路可观测告警。\n`;
+    let captionApiHits = 0;
+    const llmPrompts = [];
+    const fakeFetch = async (url, init = {}) => {
+      const u = String(url);
+      if (u.includes('/course-study/caption/c-fbmix')) {
+        captionApiHits += 1;
+        await Promise.resolve();
+        return {
+          status: 200,
+          text: async () => JSON.stringify({
+            data: [
+              { attachmentId: 'att-4', sectionId: 'sec-4-api', captionVtt: 'https://wangda.chinamobile.com/default/M00/sec4-api.vtt' },
+            ],
+          }),
+        };
+      }
+      if (u.includes('sec2.vtt')) return { status: 200, text: async () => vttSec2 };
+      if (u.includes('sec4-api.vtt')) return { status: 200, text: async () => vttSec4 };
+      if (u.includes('sec3-404.vtt')) return { status: 404, text: async () => 'Not Found' };
+      const body = JSON.parse(init.body || '{}');
+      const userMsg = body.messages?.find(m => m.role === 'user')?.content || '';
+      llmPrompts.push(userMsg);
+      if (userMsg.includes('直链字幕核心原理')) {
+        return {
+          status: 200,
+          text: async () => JSON.stringify({
+            choices: [{
+              message: {
+                content: JSON.stringify({
+                  summary: '掌握服务网格流量治理与零信任双向认证。',
+                  keyPoints: [{ text: '服务网格实施零信任双向认证', timestamp: '00:10' }],
+                  outline: [{ name: '服务网格治理', points: [{ text: '零信任双向认证', timestamp: '00:10' }] }],
+                }),
+              },
+            }],
+          }),
+        };
+      }
+      if (userMsg.includes('接口回退字幕实战')) {
+        return {
+          status: 200,
+          text: async () => JSON.stringify({
+            choices: [{
+              message: {
+                content: JSON.stringify({
+                  summary: '掌握灰度发布回滚阈值与全链路可观测告警。',
+                  keyPoints: [{ text: '灰度回滚阈值与全链路告警联动', timestamp: '01:05' }],
+                  outline: [{ name: '灰度可观测实践', points: [{ text: '回滚阈值与告警', timestamp: '01:05' }] }],
+                }),
+              },
+            }],
+          }),
+        };
+      }
+      // Course-level aggregation
+      return {
+        status: 200,
+        text: async () => JSON.stringify({
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                overview: '本课程涵盖服务网格零信任治理与灰度可观测告警两条主线。',
+                keyPoints: [
+                  { text: '服务网格实施零信任双向认证', timestamp: '00:10' },
+                  { text: '灰度回滚阈值与全链路告警联动', timestamp: '01:05' },
+                ],
+              }),
+            },
+          }],
+        }),
+      };
+    };
+
+    const controller = {
+      getState: () => ({ status: 'paused', message: '', unavailable: false, window: { start: '09:00', end: '24:00' }, automation: { enabled: false, resumeOnReload: false, mute: true }, tasks: [], activeTaskId: null, currentCourseId: null, currentSectionTitle: '', candidates: [], draft: null, problem: null }),
+      subscribe: () => () => {},
+      diagnose: () => ({ kind: 'course' }),
+    };
+
+    // 1. Direct collectCourseSubtitles concurrency dedup check for Path 3a
+    const collected = await collectCourseSubtitles({
+      win,
+      pageWin,
+      scope: 'course',
+      httpGet: async u => {
+        const r = await fakeFetch(u);
+        return { status: r.status, text: await r.text() };
+      },
+    });
+    assert.equal(captionApiHits, 1, '并发采集下路径 3a 课程字幕接口应去重并仅请求一次');
+    assert.equal(collected.captionedSections, 2);
+    assert.equal(collected.hasAnySubtitle, true);
+    assert.equal(collected.sections.find(s => s.sectionId === 'sec-2-vtt')?.source, 'vtt-url');
+    assert.equal(collected.sections.find(s => s.sectionId === 'sec-4-api')?.source, 'caption-api-vtt');
+    assert.deepEqual(collected.skippedNoSubtitleSections.map(s => s.sectionId).sort(), ['sec-1-nosub', 'sec-3-404']);
+
+    // 2. Panel flow: open directly on captionless section (scope='section') -> AI 全课 MUST remain enabled!
+    const knowledge = createKnowledgeService({ win, pageWin, controller, fetchFn: fakeFetch });
+    knowledge.mapOptions = { skipCdn: true };
+    const panel = createPanel(win, controller, '0.1.0-beta.20', knowledge);
+    panel.open();
+    const root = win.document.getElementById('wangda-assistant').shadowRoot;
+    root.querySelector('[data-action="knowledge-open"]').click();
+    for (let i = 0; i < 80; i += 1) await Promise.resolve();
+    const modal = root.querySelector('[data-knowledge-modal]');
+    // Switch picker to captionless active section sec-1-nosub
+    modal.querySelector('[data-kg-section-picker]').value = 'sec-1-nosub';
+    modal.querySelector('[data-kg-section-picker]').dispatchEvent(new win.Event('change', { bubbles: true }));
+    for (let i = 0; i < 60; i += 1) await Promise.resolve();
+    assert.equal(modal.querySelector('[data-kg-mode]').textContent, '本课无字幕');
+    assert.equal(modal.querySelector('[data-action="kg-ai-section"]').disabled, true);
+    assert.equal(modal.querySelector('[data-action="kg-ai-course"]').disabled, false, '聚焦无字幕首节时 AI 全课按钮不得被误禁');
+
+    // 3. Click AI 全课 -> BOTH sec-2 (Path 1) and sec-4 (Path 3a) enter AI guide & mindmap; sec-1 & sec-3 skipped and named!
+    modal.querySelector('[data-action="kg-ai-course"]').click();
+    for (let i = 0; i < 120; i += 1) await Promise.resolve();
+    assert.equal(modal.querySelector('[data-kg-mode]').textContent, 'AI 速览');
+    assert.equal(llmPrompts.some(p => p.includes('无字幕开场')), false, '不得为无字幕课节 1 发起 LLM 请求');
+    assert.equal(llmPrompts.some(p => p.includes('失效404录屏')), false, '不得为 404 无字幕课节 3 发起 LLM 请求');
+    assert.ok(llmPrompts.some(p => p.includes('直链字幕核心原理')), '路径 1 有字幕课节必须进入 AI 分析');
+    assert.ok(llmPrompts.some(p => p.includes('接口回退字幕实战')), '路径 3a 回退字幕课节必须进入 AI 分析');
+
+    const mdText = modal.querySelector('[data-kg-md]').textContent;
+    assert.match(mdText, /服务网格实施零信任双向认证 \[00:10\]\(#wd-seek-sec-2-vtt-10\)/u, '路径 1 有字幕节必须进入导学/导图并带时间跳播');
+    assert.match(mdText, /灰度回滚阈值与全链路告警联动 \[01:05\]\(#wd-seek-sec-4-api-65\)/u, '路径 3a 回退有字幕节必须进入导学/导图并带时间跳播');
+    const skippedBox = modal.querySelector('[data-kg-skipped-list]');
+    assert.ok(skippedBox);
+    assert.match(skippedBox.textContent, /第1节 无字幕开场/u);
+    assert.match(skippedBox.textContent, /第3节 失效404录屏/u);
+
+    panel.destroy();
+  } finally {
+    dom.window.close();
+  }
+});

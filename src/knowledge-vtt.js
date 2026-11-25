@@ -1272,58 +1272,53 @@ export async function collectCourseSubtitles({ win, pageWin = win, scope = 'cour
   const focusedSec = sectionId ? (sections.find(s => s.sectionId === sectionId) || activeSec) : activeSec;
   const targets = scope === 'section' ? (focusedSec ? [focusedSec] : []) : sections;
 
-  // Shared Path 3a caption-API lookup (executed at most once per course if any section misses Paths 1 & 2)
-  let captionApiCache = null;
-  const loadCaptionApiOnce = async () => {
-    if (captionApiCache) return captionApiCache;
-    if (!courseId) {
-      captionApiCache = { ok: false, url: null, status: null, reason: '当前页面未解析到 courseId，无法请求课程字幕接口', items: [] };
-      return captionApiCache;
-    }
-    const rawRoot = String(pageWin?.app?.options?.urlRoot || '/api/v1').replace(/\/+$/u, '');
-    const apiPath = `${rawRoot.startsWith('/') ? rawRoot : `/${rawRoot}`}/course-study/caption/${encodeURIComponent(courseId)}`;
-    const apiUrl = new URL(apiPath, win?.location?.origin || 'https://wangda.chinamobile.com').toString();
-    const safeApiUrl = redactSubtitleUrl(apiUrl);
-    if (typeof httpGet !== 'function') {
-      captionApiCache = { ok: false, url: safeApiUrl, status: null, reason: '当前环境未提供字幕接口请求通道（httpGet 不可用）', items: [] };
-      return captionApiCache;
-    }
-    try {
-      const parsedApi = new URL(apiUrl);
-      if (parsedApi.protocol !== 'https:' || !wdKvttAllowedVttHosts(parsedApi.hostname)) {
-        captionApiCache = { ok: false, url: safeApiUrl, status: null, reason: '字幕接口域名不在网大白名单内', items: [] };
-        return captionApiCache;
+  // Shared Path 3a caption-API lookup (in-flight deduplicated; executed at most once per course even under concurrency)
+  let captionApiPromise = null;
+  const loadCaptionApiOnce = () => {
+    if (captionApiPromise) return captionApiPromise;
+    captionApiPromise = (async () => {
+      if (!courseId) {
+        return { ok: false, url: null, status: null, reason: '当前页面未解析到 courseId，无法请求课程字幕接口', items: [] };
       }
-      const res = await httpGet(apiUrl, { signal, sameOrigin: parsedApi.origin === win?.location?.origin });
-      const status = typeof res === 'object' && res !== null && Number.isFinite(Number(res.status)) ? Number(res.status) : 200;
-      const text = typeof res === 'string' ? res : String(res?.text ?? '');
-      if (status < 200 || status >= 300) {
-        captionApiCache = { ok: false, url: safeApiUrl, status, reason: `课程字幕接口返回 HTTP ${status}`, items: [] };
-        return captionApiCache;
+      const rawRoot = String(pageWin?.app?.options?.urlRoot || '/api/v1').replace(/\/+$/u, '');
+      const apiPath = `${rawRoot.startsWith('/') ? rawRoot : `/${rawRoot}`}/course-study/caption/${encodeURIComponent(courseId)}`;
+      const apiUrl = new URL(apiPath, win?.location?.origin || 'https://wangda.chinamobile.com').toString();
+      const safeApiUrl = redactSubtitleUrl(apiUrl);
+      if (typeof httpGet !== 'function') {
+        return { ok: false, url: safeApiUrl, status: null, reason: '当前环境未提供字幕接口请求通道（httpGet 不可用）', items: [] };
       }
-      if (!text.trim()) {
-        captionApiCache = { ok: false, url: safeApiUrl, status, reason: '课程字幕接口返回空响应', items: [] };
-        return captionApiCache;
+      try {
+        const parsedApi = new URL(apiUrl);
+        if (parsedApi.protocol !== 'https:' || !wdKvttAllowedVttHosts(parsedApi.hostname)) {
+          return { ok: false, url: safeApiUrl, status: null, reason: '字幕接口域名不在网大白名单内', items: [] };
+        }
+        const res = await httpGet(apiUrl, { signal, sameOrigin: parsedApi.origin === win?.location?.origin });
+        const status = typeof res === 'object' && res !== null && Number.isFinite(Number(res.status)) ? Number(res.status) : 200;
+        const text = typeof res === 'string' ? res : String(res?.text ?? '');
+        if (status < 200 || status >= 300) {
+          return { ok: false, url: safeApiUrl, status, reason: `课程字幕接口返回 HTTP ${status}`, items: [] };
+        }
+        if (!text.trim()) {
+          return { ok: false, url: safeApiUrl, status, reason: '课程字幕接口返回空响应', items: [] };
+        }
+        let parsed;
+        try { parsed = JSON.parse(text); } catch {
+          return { ok: false, url: safeApiUrl, status, reason: '课程字幕接口返回非 JSON 内容', items: [] };
+        }
+        const items = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.data) ? parsed.data : []);
+        return { ok: true, url: safeApiUrl, status, reason: items.length ? `接口返回 ${items.length} 条字幕记录` : '课程字幕接口返回空列表（该课程无 AI 字幕）', items };
+      } catch (err) {
+        const status = wdKvttExtractHttpStatus(err);
+        return {
+          ok: false,
+          url: safeApiUrl,
+          status,
+          reason: status ? `课程字幕接口请求失败（HTTP ${status}）` : `课程字幕接口请求异常（${err?.message || '网络错误'}）`,
+          items: [],
+        };
       }
-      let parsed;
-      try { parsed = JSON.parse(text); } catch {
-        captionApiCache = { ok: false, url: safeApiUrl, status, reason: '课程字幕接口返回非 JSON 内容', items: [] };
-        return captionApiCache;
-      }
-      const items = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.data) ? parsed.data : []);
-      captionApiCache = { ok: true, url: safeApiUrl, status, reason: items.length ? `接口返回 ${items.length} 条字幕记录` : '课程字幕接口返回空列表（该课程无 AI 字幕）', items };
-      return captionApiCache;
-    } catch (err) {
-      const status = wdKvttExtractHttpStatus(err);
-      captionApiCache = {
-        ok: false,
-        url: safeApiUrl,
-        status,
-        reason: status ? `课程字幕接口请求失败（HTTP ${status}）` : `课程字幕接口请求异常（${err?.message || '网络错误'}）`,
-        items: [],
-      };
-      return captionApiCache;
-    }
+    })();
+    return captionApiPromise;
   };
 
   const resolveSectionSubtitles = async sec => {
