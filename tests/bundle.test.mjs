@@ -5,14 +5,22 @@ import vm from 'node:vm';
 import { JSDOM } from 'jsdom';
 const source = await readFile(new URL('../dist/wangda-assistant.user.js', import.meta.url), 'utf8').catch(() => '');
 const { version } = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
-test('单文件metadata仅声明本域和必要权限，无网络请求', () => {
+test('单文件metadata声明必要权限，核心学习模块仍零网络请求', async () => {
   assert.ok(source.startsWith('// ==UserScript=='), '尚未构建userscript'); assert.equal(source.match(/@version\s+(\S+)/u)?.[1], version); assert.match(source, /@match\s+https:\/\/wangda\.chinamobile\.com\/\*/u);
-  assert.match(source, /@noframes/u); assert.deepEqual([...source.matchAll(/@grant\s+(\w+)/gu)].map(x => x[1]), ['GM_getValue', 'GM_setValue', 'GM_registerMenuCommand', 'GM_notification']);
+  assert.match(source, /@noframes/u);
+  assert.deepEqual([...source.matchAll(/@grant\s+(\w+)/gu)].map(x => x[1]), ['GM_getValue', 'GM_setValue', 'GM_registerMenuCommand', 'GM_notification', 'GM_xmlhttpRequest', 'unsafeWindow']);
+  assert.match(source, /^\/\/ @connect\s+\*$/mu);
   assert.match(source, /@description[^\n]*多专区/u); assert.match(source, /function normalizeQueue\(/u); assert.ok(source.indexOf('function normalizeQueue(') < source.indexOf('function createController('));
   const updateAddress = 'https://raw.githubusercontent.com/ka1er/wangda-assistant/refs/heads/beta-channel/dist/wangda-assistant.user.js';
   assert.deepEqual([...source.matchAll(/^\/\/ @(updateURL|downloadURL)\s+(\S+)$/gmu)].map(x => [x[1], x[2]]), [['updateURL', updateAddress], ['downloadURL', updateAddress]]);
   assert.equal(source.match(/^\/\/ @name\s+(.+)$/mu)?.[1], '网大助手'); assert.equal(source.match(/^\/\/ @namespace\s+(\S+)$/mu)?.[1], 'wangda-assistant');
-  assert.doesNotMatch(source, /@connect|\bfetch\s*\(|XMLHttpRequest/u); assert.doesNotThrow(() => new vm.Script(source));
+  // Core learning queue modules must remain strictly network-free.
+  for (const coreFile of ['core', 'adapter', 'queue', 'playback-log', 'controller']) {
+    const coreSrc = await readFile(new URL(`../src/${coreFile}.js`, import.meta.url), 'utf8');
+    assert.doesNotMatch(coreSrc, /@connect|\bfetch\s*\(|XMLHttpRequest|GM_xmlhttpRequest/u, `${coreFile}.js 不得包含主动网络请求`);
+  }
+  assert.doesNotMatch(source, /\bXMLHttpRequest\b/u);
+  assert.doesNotThrow(() => new vm.Script(source));
 });
 function boot(url = 'https://wangda.chinamobile.com/#/home') {
   const dom = new JSDOM('<body></body>', { url, runScripts: 'outside-only' }); const w = dom.window;

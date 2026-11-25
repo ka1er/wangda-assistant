@@ -93,14 +93,30 @@ test('有限内存、清空和原生异常不被诊断吞掉', t => {
   const copy = diag.exportData(); copy.events.push({ kind: 'private' }); assert.equal(diag.exportData().events.length, 0); env.close();
 });
 
-test('小面板开始停止和标记按钮连通', t => {
+test('小面板合并启停开关、标记按钮和说明折叠连通', t => {
   const env = setup(); t.after(() => env.close()); const { w, diag } = env;
   assert.equal(typeof mod.mountPlaybackDiagnostics, 'function', '诊断面板尚未实现');
   const panel = mod.mountPlaybackDiagnostics(w, diag, '0.1.0-test.1');
   const root = w.document.getElementById('wangda-playback-diagnostics').shadowRoot;
-  root.querySelector('[data-action="start"]').click(); assert.equal(diag.isRecording(), true);
+  const toggleBtn = root.querySelector('[data-action="toggle-record"]');
+  assert.ok(toggleBtn); assert.equal(toggleBtn.textContent, '开始记录');
+  assert.equal(root.querySelector('[data-events]').textContent, '暂无记录');
+  assert.equal(root.querySelector('details').open, false);
+  toggleBtn.click(); assert.equal(diag.isRecording(), true); assert.equal(toggleBtn.textContent, '停止记录');
   const role = root.querySelector('select'); role.value = 'B'; role.dispatchEvent(new w.Event('change')); assert.equal(diag.exportData().role, 'B');
   root.querySelector('[data-action="mark"]').click(); assert.ok(diag.exportData().events.some(e => e.kind === 'manual-mark'));
-  root.querySelector('[data-action="stop"]').click(); assert.equal(diag.isRecording(), false);
+  toggleBtn.click(); assert.equal(diag.isRecording(), false); assert.equal(toggleBtn.textContent, '开始记录');
   assert.ok(root.textContent.includes('0.1.0-test.1')); panel.destroy(); assert.equal(w.document.getElementById('wangda-playback-diagnostics'), null); env.close();
+});
+
+test('诊断面板在窄屏（<740px）默认收起且带 max-width 防溢出样式', t => {
+  const env = setup(); t.after(() => env.close()); const { w, diag } = env;
+  Object.defineProperty(w, 'innerWidth', { value: 640, configurable: true });
+  const panel = mod.mountPlaybackDiagnostics(w, diag, '0.1.0-test.1');
+  const root = w.document.getElementById('wangda-playback-diagnostics').shadowRoot;
+  assert.equal(root.querySelector('main').hidden, true);
+  assert.equal(root.querySelector('[data-action="toggle"]').textContent, '展开');
+  assert.match(root.querySelector('style').textContent, /max-width:calc\(100vw - 32px\)/u);
+  assert.match(root.querySelector('style').textContent, /@media \(max-width:739px\)/u);
+  panel.destroy(); env.close();
 });

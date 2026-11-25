@@ -205,7 +205,7 @@ test('专题课程已加载但标题缺失或不匹配时，诊断和超时明�
     assert.equal(f.c.getState().status, 'preparing'); assert.equal(f.c.getState().draft, null);
     assert.equal(f.c.diagnose().subjectTitleMatches, false);
     await elapse(f, 31000); assert.equal(f.c.getState().status, 'paused');
-    assert.match(f.c.getState().message, title ? /专题标题.*不一致/u : /未识别.*专题标题/u);
+    assert.match(f.c.getState().message, title ? /专区标题.*不一致/u : /未识别.*专区标题/u);
     assert.equal(f.shared['wangda-assistant.task'], undefined);
     await f.c.pause();
   }
@@ -1104,4 +1104,19 @@ test('手工读取与准备超时按零结果、页面未就绪、不支持的�
     assert.match(f.c.getState().message, pattern);
     f.c.destroy();
   }
+});
+
+test('系统通知不重复拼接“网大助手：”前缀，且常规提示统一使用“专区”术语', async () => {
+  const notices = [];
+  const f = fixture({}, { notify: text => notices.push(text) });
+  assert.equal(await f.c.start(), false);
+  assert.match(f.c.getState().message, /请先添加专区任务/u);
+  assert.doesNotMatch(f.c.getState().message, /专题/u);
+  await ready(f);
+  f.page(course([section('done', 1, 'completed')]));
+  await f.c.start(); await f.c.tick(); await f.c.tick();
+  assert.equal(notices.length, 1);
+  assert.doesNotMatch(notices[0], /^网大助手：/u);
+  assert.match(notices[0], /所选课程已完成/u);
+  f.c.destroy();
 });

@@ -28,11 +28,14 @@ test('构建入口防重复、非本域和 iframe 不读取页面', () => {
   w.Blob = class { constructor(parts) { downloaded = JSON.parse(parts.join('')); } };
   w.URL.createObjectURL = () => 'blob:test'; w.URL.revokeObjectURL = () => {};
   w.HTMLAnchorElement.prototype.click = function () { filename = this.download; };
-  w.eval(source); w.eval(source); assert.equal(w.document.querySelectorAll('#wangda-playback-diagnostics').length, 1);
-  const root = w.document.getElementById('wangda-playback-diagnostics').shadowRoot;
-  root.querySelector('[data-action="start"]').click(); w.document.querySelector('video').pause();
-  root.querySelector('[data-action="stop"]').click(); root.querySelector('[data-action="export"]').click();
-  assert.match(filename, /^wangda-playback-A-\d+\.json$/u);
-  assert.deepEqual(downloaded.events.find(e => e.kind === 'pause-call').frames, [{ file: 'study-123.js', line: 123, column: 45 }]);
-  assert.doesNotMatch(JSON.stringify(downloaded), /SECRET|private|https:|token/u); w.close();
+  try {
+    w.eval(source); w.eval(source); assert.equal(w.document.querySelectorAll('#wangda-playback-diagnostics').length, 1);
+    const root = w.document.getElementById('wangda-playback-diagnostics').shadowRoot;
+    const toggleRecord = root.querySelector('[data-action="toggle-record"]');
+    toggleRecord.click(); w.document.querySelector('video').pause();
+    toggleRecord.click(); root.querySelector('[data-action="export"]').click();
+    assert.match(filename, /^wangda-playback-A-\d+\.json$/u);
+    assert.deepEqual(downloaded.events.find(e => e.kind === 'pause-call').frames, [{ file: 'study-123.js', line: 123, column: 45 }]);
+    assert.doesNotMatch(JSON.stringify(downloaded), /SECRET|private|https:|token/u);
+  } finally { w.close(); }
 });
