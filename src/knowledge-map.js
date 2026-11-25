@@ -98,8 +98,8 @@ function wdKmapRenderFallbackSvg(svg, markdown, onSeek) {
     svg.replaceChildren();
     const viewport = createSvg('g', { transform: `translate(${panX},${panY}) scale(${scale})` });
     svg.append(viewport);
-    const colWidths = [180, 220, 220, 280, 260];
-    const rowHeight = 32;
+    const colWidths = [210, 250, 250, 290, 280];
+    const rowHeight = 46;
     let nextY = 0;
 
     const layout = (node, level, idPath) => {
@@ -130,13 +130,35 @@ function wdKmapRenderFallbackSvg(svg, markdown, onSeek) {
         viewport.append(path);
       }
       const group = createSvg('g', { class: 'wd-fallback-node', 'data-node-id': idPath, transform: `translate(${x},${y})` });
-      const textLabel = node.label.length > 22 ? `${node.label.slice(0, 21)}…` : node.label;
-      const boxWidth = Math.min(240, Math.max(92, textLabel.length * 11 + (node.timeText ? 54 : 20)));
+      const rawLabel = String(node.label || '').replace(/(?:\u2026|\.{2,})\s*$/u, '').trim() || node.label || '';
+      const wrapLabelLines = (str, maxUnits = 20) => {
+        const lines = [];
+        let cur = '';
+        let units = 0;
+        for (const ch of str) {
+          const w = /[\u2e80-\uffff]/u.test(ch) ? 1 : 0.6;
+          if (cur && units + w > maxUnits) {
+            lines.push(cur);
+            cur = ch;
+            units = w;
+          } else {
+            cur += ch;
+            units += w;
+          }
+        }
+        if (cur) lines.push(cur);
+        return lines.length ? lines : [str];
+      };
+      const labelLines = wrapLabelLines(rawLabel, 20);
+      const maxLineUnits = Math.max(...labelLines.map(line => [...line].reduce((s, ch) => s + (/[\u2e80-\uffff]/u.test(ch) ? 12 : 7), 0)));
+      const boxWidth = Math.min(268, Math.max(96, Math.ceil(maxLineUnits) + (node.timeText ? 54 : 20)));
+      const lineHeight = 15;
+      const boxHeight = Math.max(24, labelLines.length * lineHeight + 10);
       const rect = createSvg('rect', {
         x: 0,
-        y: -12,
+        y: -Math.round(boxHeight / 2),
         width: boxWidth,
-        height: 24,
+        height: boxHeight,
         rx: 5,
         fill: level === 0 ? '#176ac2' : '#f4f9ff',
         stroke: color,
@@ -144,12 +166,20 @@ function wdKmapRenderFallbackSvg(svg, markdown, onSeek) {
       });
       const text = createSvg('text', {
         x: 8,
-        y: 4,
+        y: labelLines.length === 1 ? 4 : -Math.round(((labelLines.length - 1) * lineHeight) / 2) + 4,
         fill: level === 0 ? '#ffffff' : '#17344d',
         'font-size': level === 0 ? '13' : '12',
         'font-family': 'system-ui,"Microsoft YaHei",sans-serif',
       });
-      text.textContent = textLabel;
+      if (labelLines.length === 1) {
+        text.textContent = labelLines[0];
+      } else {
+        labelLines.forEach((line, idx) => {
+          const tspan = createSvg('tspan', { x: 8, dy: idx === 0 ? 0 : lineHeight });
+          tspan.textContent = line;
+          text.append(tspan);
+        });
+      }
       group.append(rect, text);
 
       if (node.seek && node.timeText) {
@@ -196,8 +226,8 @@ function wdKmapRenderFallbackSvg(svg, markdown, onSeek) {
     };
 
     layout(tree, 0, '0');
-    const totalHeight = Math.max(300, nextY * rowHeight + 48);
-    svg.setAttribute('viewBox', `0 0 920 ${totalHeight}`);
+    const totalHeight = Math.max(320, nextY * rowHeight + 60);
+    svg.setAttribute('viewBox', `0 0 1080 ${totalHeight}`);
   };
 
   const onWheel = ev => {

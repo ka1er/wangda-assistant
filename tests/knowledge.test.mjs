@@ -13,9 +13,12 @@ import {
   selectCaptionTrack,
   collectCourseSubtitles,
   seekCourseTime,
+  hasTrailingEllipsis,
+  sanitizeCompleteText,
 } from '../src/knowledge-vtt.js';
 import {
   WD_AI_STORAGE_KEYS,
+  WD_AI_CACHE_SCHEMA_VERSION,
   WD_AI_PRIVACY_NOTICE,
   loadAiSettings,
   saveAiSettings,
@@ -24,6 +27,9 @@ import {
   loadKnowledgeCache,
   saveKnowledgeCache,
   buildChatCompletionsUrl,
+  buildSectionPrompt,
+  buildSectionChunkAggregationPrompt,
+  buildCourseAggregationPrompt,
   parseStrictJsonContent,
   normalizeSectionStudyPayload,
   summarizeCourseWithAi,
@@ -233,12 +239,14 @@ test('零 AI 导览与 ATX Markdown 树生成、token 粗略预估、UUID 跳播
   assert.deepEqual(parseSeekHref('#wd-seek-sec-uuid-1-125'), { sectionId: 'sec-uuid-1', seconds: 125 });
 });
 
-test('AI Key 与配置仅存 localStorage，不碰 GM_setValue，一键清空与 URL 校验正常', () => {
+test('AI Key 与配置优先存 GM_setValue 隔离存储，无 GM 时降级 localStorage，一键清空与 URL 校验正常', () => {
   const dom = new JSDOM('<body></body>', { url: 'https://wangda.chinamobile.com/#/home' });
   try {
     const win = dom.window;
-    let gmWrites = 0;
-    win.GM_setValue = () => { gmWrites += 1; };
+    // 1. Tampermonkey GM_setValue available -> stored in GM sandbox, NEVER written to host localStorage
+    const gmMap = new Map();
+    win.GM_getValue = (k, def) => (gmMap.has(k) ? gmMap.get(k) : def);
+    win.GM_setValue = (k, v) => { gmMap.set(k, v); };
 
     const init = loadAiSettings(win);
     assert.equal(init.apiKey, '');
@@ -252,15 +260,15 @@ test('AI Key 与配置仅存 localStorage，不碰 GM_setValue，一键清空与
       transport: 'fetch',
     });
     assert.equal(saved.ok, true);
-    assert.equal(gmWrites, 0);
-    assert.equal(win.localStorage.getItem(WD_AI_STORAGE_KEYS.apiKey), 'sk-local-secret-123');
+    assert.equal(saved.backend, 'gm');
+    assert.equal(gmMap.get(WD_AI_STORAGE_KEYS.apiKey), 'sk-local-secret-123');
+    assert.equal(win.localStorage.getItem(WD_AI_STORAGE_KEYS.legacyApiKey), null, 'GM 模式下宿主 localStorage 不得存明文 API Key');
     assert.equal(loadAiSettings(win).apiKey, 'sk-local-secret-123');
     assert.equal(loadAiSettings(win).baseUrl, 'https://relay.example.com/v1');
 
     // Clear key
     const cleared = clearAiApiKey(win);
     assert.equal(cleared.ok, true);
-    assert.equal(win.localStorage.getItem(WD_AI_STORAGE_KEYS.apiKey), null);
     assert.equal(loadAiSettings(win).apiKey, '');
     // Non-key config preserved
     assert.equal(loadAiSettings(win).baseUrl, 'https://relay.example.com/v1');
@@ -541,14 +549,15 @@ test('面板设置区展示本地 Key 告知文案与一键清空，导览弹窗
     root.querySelector('[name="ai-model"]').value = 'gpt-4o-mini';
     root.querySelector('[name="ai-api-key"]').value = 'sk-panel-key';
     root.querySelector('[data-action="ai-save"]').click();
-    assert.equal(win.localStorage.getItem(WD_AI_STORAGE_KEYS.apiKey), 'sk-panel-key');
+    assert.equal(loadAiSettings(win).apiKey, 'sk-panel-key');
+    assert.equal(win.localStorage.getItem(WD_AI_STORAGE_KEYS.legacyApiKey), 'sk-panel-key');
 
     // Open Knowledge Guide modal -> defaults to zero-AI Quick View + shows token estimates + hides full timeline
     root.querySelector('[data-action="knowledge-open"]').click();
     for (let i = 0; i < 40; i += 1) await Promise.resolve();
     const modal = root.querySelector('[data-knowledge-modal]');
     assert.ok(modal);
-    assert.match(modal.querySelector('[data-kg-mode]').textContent, /零 AI 速览/u);
+    assert.match(modal.querySelector('[data-kg-mode]').textContent, /本地摘要/u);
     assert.equal(modal.querySelector('[data-kg-pane="quick"]').hidden, false);
     assert.equal(modal.querySelector('[data-kg-pane="detail"]').hidden, true);
     assert.equal(modal.querySelector('[data-kg-pane="quick"] [data-kg-timeline]'), null);
@@ -556,11 +565,14 @@ test('面板设置区展示本地 Key 告知文案与一键清空，导览弹窗
     assert.match(modal.querySelector('[data-kg-estimate]').textContent, /当前课节预估.*整门课程预估/su);
     assert.ok(modal.querySelector('svg[data-kg-svg] .wd-fallback-node'));
 
-    // Trigger AI section analysis with invalid key -> falls back cleanly to zero-AI with banner
+    // Trigger AI section analysis with invalid key -> falls back cleanly to local summary with explicit reason & settings button
     modal.querySelector('[data-action="kg-ai-section"]').click();
     for (let i = 0; i < 60; i += 1) await Promise.resolve();
-    assert.match(modal.querySelector('[data-kg-mode]').textContent, /已回退零 AI/u);
+    assert.match(modal.querySelector('[data-kg-mode]').textContent, /本地摘要.*已回退/u);
     assert.match(modal.querySelector('[data-kg-banner]').textContent, /API Key 无效|HTTP 401/u);
+    assert.match(modal.querySelector('[data-kg-source-callout]').textContent, /当前为本地摘要（未使用 AI），开启\/修复 AI 解读可获得完整讲解/u);
+    assert.match(modal.querySelector('[data-kg-source-callout-desc]').textContent, /API Key 无效|HTTP 401/u);
+    assert.ok(modal.querySelector('[data-action="kg-callout-settings"]'));
 
     // Close modal -> SVG removed
     modal.querySelector('[data-action="kg-close"]').click();
@@ -568,7 +580,8 @@ test('面板设置区展示本地 Key 告知文案与一键清空，导览弹窗
 
     // One-click clear Key
     root.querySelector('[data-action="ai-clear-key"]').click();
-    assert.equal(win.localStorage.getItem(WD_AI_STORAGE_KEYS.apiKey), null);
+    assert.equal(win.localStorage.getItem(WD_AI_STORAGE_KEYS.legacyApiKey), null);
+    assert.equal(loadAiSettings(win).apiKey, '');
     assert.equal(root.querySelector('[name="ai-api-key"]').value, '');
 
     panel.destroy();
@@ -1518,7 +1531,8 @@ test('部分课节有字幕、部分无字幕：目录打「无字幕」角标�
     for (let i = 0; i < 80; i += 1) await Promise.resolve();
     assert.equal(llmSectionsCalled.length, 1, '只应对有字幕的 sec-ok 发起 LLM 请求');
     assert.match(llmSectionsCalled[0], /第1节 有字幕精讲/u);
-    assert.equal(modal.querySelector('[data-kg-mode]').textContent, 'AI 速览');
+    assert.equal(modal.querySelector('[data-kg-mode]').textContent, 'AI 生成');
+    assert.equal(modal.querySelector('[data-kg-source-callout]'), null, '纯 AI 生成态不应展示本地摘要提示条');
     const skippedBox = modal.querySelector('[data-kg-skipped-list]');
     assert.ok(skippedBox, '整课总览卡片应列出被跳过的无字幕课节名');
     assert.match(skippedBox.textContent, /第2节 实操无字幕/u);
@@ -2120,7 +2134,8 @@ test('混合课程回退采集与批量 AI 导学：首节无字幕不误禁整�
     // 3. Click AI 全课 -> BOTH sec-2 (Path 1) and sec-4 (Path 3a) enter AI guide & mindmap; sec-1 & sec-3 skipped and named!
     modal.querySelector('[data-action="kg-ai-course"]').click();
     for (let i = 0; i < 120; i += 1) await Promise.resolve();
-    assert.equal(modal.querySelector('[data-kg-mode]').textContent, 'AI 速览');
+    assert.equal(modal.querySelector('[data-kg-mode]').textContent, 'AI 生成');
+    assert.equal(modal.querySelector('[data-kg-source-callout]'), null, '纯 AI 生成态不应展示本地摘要提示条');
     assert.equal(llmPrompts.some(p => p.includes('无字幕开场')), false, '不得为无字幕课节 1 发起 LLM 请求');
     assert.equal(llmPrompts.some(p => p.includes('失效404录屏')), false, '不得为 404 无字幕课节 3 发起 LLM 请求');
     assert.ok(llmPrompts.some(p => p.includes('直链字幕核心原理')), '路径 1 有字幕课节必须进入 AI 分析');
@@ -2133,6 +2148,575 @@ test('混合课程回退采集与批量 AI 导学：首节无字幕不误禁整�
     assert.ok(skippedBox);
     assert.match(skippedBox.textContent, /第1节 无字幕开场/u);
     assert.match(skippedBox.textContent, /第3节 失效404录屏/u);
+
+    panel.destroy();
+  } finally {
+    dom.window.close();
+  }
+});
+
+test('零 AI 完整句速览：无标点长字幕与极端超长无句号 cue 不产生残句或省略号，整课总览有实质信息量且跨节合并重复点', () => {
+  const unbreakableBlob = '算力网络基础设施高速互联协同调度架构演进方案技术白皮书核心指标体系验证分析报告'.repeat(3); // 117 chars, zero punctuation/spaces/connectors
+  const courseData = {
+    courseId: 'c-no-ellipsis',
+    title: '算力网络总体策略与演进',
+    activeSectionId: 'sec-1',
+    sections: [
+      {
+        sectionId: 'sec-1',
+        sectionIndex: 1,
+        chapterTitle: '第一章',
+        title: 'Token时代三大趋势对算力网络提出新要求',
+        active: true,
+        cues: [
+          { startMs: 3000, endMs: 9000, text: '今天我们第一门课程是算力网络总体策略的介绍这个课程时间也比较短可能我准备的胶片也不是很完善' },
+          { startMs: 12000, endMs: 22000, text: unbreakableBlob },
+          { startMs: 45000, endMs: 56000, text: 'Token 时代正在推动算力需求从通用计算全面转向大规模智能计算' },
+          { startMs: 89000, endMs: 102000, text: '在今年的上半年的时候在移动云大会上发布了一系列重磅成果 包括支持IPv6演进的新型算力路由能力' },
+          { startMs: 115000, endMs: 128000, text: '还有就是发布了国内最大的模型服务平台NOMA 这也证明着我们在向智算服务全面转型' },
+          { startMs: 156000, endMs: 170000, text: '在十五五开局之年国家部委持续强化 AI 算力基础设施统筹布局与自主可控要求' },
+          { startMs: 441000, endMs: 458000, text: '随着数据中心训练集群规模向万卡级乃至十万卡级演进 MOE 大模型训练对东西向高速互联提出更高要求' },
+        ],
+      },
+      {
+        sectionId: 'sec-2',
+        sectionIndex: 2,
+        chapterTitle: '第二章',
+        title: 'Token时代算力网络发展方向',
+        active: false,
+        cues: [
+          { startMs: 5000, endMs: 16000, text: '这个呢就是面向2030年我们在以网强算为核心的算力网络演进蓝图' },
+          { startMs: 70000, endMs: 84000, text: '以网强算的核心是通过高通量无损网络提升跨集群算力协同效率' },
+          { startMs: 110000, endMs: 124000, text: 'Token 时代正在推动算力需求从通用计算全面转向大规模智能计算' }, // intentional cross-section duplicate!
+          { startMs: 140000, endMs: 156000, text: '面向 Token 时代需要构建云网边端一体化的智算调度体系，降低推理时延与成本' },
+        ],
+      },
+    ],
+  };
+
+  const { tree } = buildZeroAiGuide(courseData, { scope: 'course' });
+
+  // 1. Course overview must have real information, NOT mechanical title listing or ellipsis
+  assert.ok(tree.overview.length >= 16);
+  assert.equal(hasTrailingEllipsis(tree.overview), false, '整课总览不能以省略号结尾');
+  assert.doesNotMatch(tree.overview, /主线覆盖\s*《/u, '整课总览不得只罗列课节标题');
+  assert.doesNotMatch(tree.overview, /零 AI 整课速览/u);
+  assert.ok(Array.isArray(tree.courseThemes) && tree.courseThemes.length >= 2, '应提取出课程级核心主题关键词');
+
+  // 2. Course key points: cross-section duplicate merged, no ellipsis, reasonable length
+  assert.ok(tree.courseKeyPoints.length >= 2 && tree.courseKeyPoints.length <= 6);
+  const dupMatches = tree.courseKeyPoints.filter(kp => kp.text.includes('从通用计算全面转向大规模智能计算'));
+  assert.equal(dupMatches.length, 1, '不同课节重复出现的相同知识点应合并去重');
+  for (const kp of tree.courseKeyPoints) {
+    assert.equal(hasTrailingEllipsis(kp.text), false, `全课要点不能含省略号结尾: ${kp.text}`);
+    assert.ok(kp.text.length >= 8 && kp.text.length <= 50, `全课要点长度应在完整句阈值内: ${kp.text} (${kp.text.length})`);
+    assert.doesNotMatch(kp.text, /胶片|时间也比较短/u, '应过滤低信息量开场白寒暄');
+  }
+
+  // 3. Per-section summary, keyPoints, outline, quiz, glossary: ZERO ellipsis & ZERO boilerplate prefix
+  for (const sec of tree.sections) {
+    assert.equal(hasTrailingEllipsis(sec.summary), false, `分节摘要不得含省略号: ${sec.summary}`);
+    assert.doesNotMatch(sec.summary, /零 AI 提炼（首段摘要）/u);
+    assert.doesNotMatch(sec.summary, new RegExp(unbreakableBlob.slice(0, 18), 'u'), '极端无标点超长 cue 不得硬截断展示');
+    for (const kp of sec.keyPoints) {
+      assert.equal(hasTrailingEllipsis(kp.text), false, `分节要点不得含省略号: ${kp.text}`);
+      assert.ok(kp.text.length >= 8 && kp.text.length <= 50, `分节要点长度应在合理阈值内: ${kp.text}`);
+      assert.doesNotMatch(kp.text, new RegExp(unbreakableBlob.slice(0, 18), 'u'));
+    }
+    for (const topic of sec.outline) {
+      assert.equal(hasTrailingEllipsis(topic.name), false, `知识大纲主题不得含省略号: ${topic.name}`);
+      for (const pt of topic.points) {
+        assert.equal(hasTrailingEllipsis(pt.text), false, `大纲知识点不得含省略号: ${pt.text}`);
+      }
+    }
+    for (const q of sec.quiz) {
+      assert.equal(hasTrailingEllipsis(q.question), false);
+      assert.equal(hasTrailingEllipsis(q.answer), false);
+    }
+    for (const g of sec.glossary) {
+      assert.equal(hasTrailingEllipsis(g.definition), false, `术语释义不得含省略号: ${g.term} -> ${g.definition}`);
+      assert.doesNotMatch(g.definition, /^课程提及[：:]/u, '术语释义禁止使用「课程提及：」前缀');
+      assert.ok(g.definition.toLowerCase().includes(g.term.toLowerCase()), `术语 ${g.term} 的释义应来自包含该术语的完整上下文句: ${g.definition}`);
+      assert.ok(['本课重点', '拓展提及'].includes(g.importance), `术语应标注重点级别: ${g.importance}`);
+    }
+  }
+
+  // 4. Extreme case: ALL cues are unbreakable overlong blobs with zero punctuation/spaces -> still zero ellipsis!
+  const extremeGuide = buildZeroAiGuide({
+    courseId: 'c-extreme',
+    title: '极端长句课',
+    activeSectionId: 's-ext',
+    sections: [{
+      sectionId: 's-ext',
+      sectionIndex: 1,
+      title: '极端无标点单句',
+      active: true,
+      cues: [{ startMs: 1000, endMs: 50000, text: unbreakableBlob }],
+    }],
+  }, { scope: 'section' });
+  const extSec = extremeGuide.tree.sections[0];
+  assert.equal(extSec.keyPoints.length, 0, '无法按句边界切分的极端超长 cue 应放弃展示该要点，而非输出残句');
+  assert.equal(hasTrailingEllipsis(extSec.summary), false);
+  assert.doesNotMatch(extSec.summary, /…|\.\.\./u);
+  assert.equal(sanitizeCompleteText('这是一段被硬截断的半句话然后就…'), '');
+  assert.equal(sanitizeCompleteText('完整第一句已经表达清楚。第二句却被截断了…'), '完整第一句已经表达清楚。');
+});
+
+test('AI 提示词同步整改与硬截断残句防御：规范化层与前端渲染层均不展示省略号残句', async () => {
+  // 1. Prompt contracts enforce complete sentences, 8-40 chars, no ellipsis, no raw transcript fragments, glossary importance
+  const secPrompt = buildSectionPrompt('算力网络课程', { sectionIndex: 1, title: '总体策略' }, [{ timestamp: '00:10', text: '测试字幕。' }]);
+  assert.match(secPrompt.system, /主谓宾.*自足陈述句/u);
+  assert.match(secPrompt.system, /8[–~-]40\s*字/u);
+  assert.match(secPrompt.system, /禁止.*省略号|严禁.*省略号/u);
+  assert.match(secPrompt.system, /禁止复制字幕|严禁复制字幕/u);
+  assert.match(secPrompt.system, /禁止把课节标题当内容|严禁把课节标题当内容/u);
+  assert.match(secPrompt.system, /本课重点/u);
+  assert.match(secPrompt.system, /课程提及/u);
+  assert.match(secPrompt.system, /3[–~-]6\s*条.*宁少不凑/u);
+
+  const chunkAggPrompt = buildSectionChunkAggregationPrompt('算力网络课程', { title: '总体策略' }, [{ summary: '摘要', keyPoints: [], outline: [] }]);
+  assert.match(chunkAggPrompt.system, /主谓宾.*自足陈述句/u);
+  assert.match(chunkAggPrompt.system, /严禁以省略号结尾|禁止省略号/u);
+  assert.match(chunkAggPrompt.system, /本课重点/u);
+
+  const courseAggPrompt = buildCourseAggregationPrompt('算力网络课程', [{ sectionId: 's1', title: '一', summary: '摘要', keyPoints: [], outline: [] }]);
+  assert.match(courseAggPrompt.system, /禁止罗列课节标题/u);
+  assert.match(courseAggPrompt.system, /合并去重/u);
+  assert.match(courseAggPrompt.system, /严禁以省略号结尾/u);
+
+  // 2. Normalization strips "课程提及：", drops pure truncated fragments, salvages complete sentences before truncation, filters title copies
+  const normalized = normalizeSectionStudyPayload({
+    summary: '算力网络需要通过以网强算支撑大规模智算集群。但是后半句被模型截断了…',
+    keyPoints: [
+      { text: '今天我们第一门课程是算力网络总体策略的介绍这个课…', time: '00:03' }, // pure truncated -> dropped!
+      { text: 'Token时代三大趋势对算力网络提出新要求', time: '00:05' }, // exact section title copy -> filtered!
+      { text: '算力网络需构建高通量无损互联以支撑万卡集群训练。', time: '01:20' }, // valid complete sentence -> kept!
+      { text: 'AI 权限边界扩大后须落实现有安全评估与备案要求...', time: '02:00' }, // ASCII ellipsis -> dropped!
+    ],
+    outline: [
+      {
+        name: '智算互联架构',
+        points: [
+          { text: '通过无损网络提升跨集群算力调度效率。', time: '01:20' },
+          { text: '被截断的残缺知识点…', time: '01:40' },
+        ],
+      },
+    ],
+    glossary: [
+      { term: 'NOMA', definition: '课程提及：国内大规模模型服务平台，用于统一承接智算与模型推理服务。', isCore: true, time: '01:55' },
+      { term: 'BADTERM', definition: '课程提及：还有就是发布了国内最大的模型服务平台也是证明我们在向智…', time: '02:10' },
+    ],
+  }, { sectionTitle: 'Token时代三大趋势对算力网络提出新要求' });
+
+  assert.equal(normalized.summary, '算力网络需要通过以网强算支撑大规模智算集群。');
+  assert.equal(normalized.keyPoints.length, 1);
+  assert.equal(normalized.keyPoints[0].text, '算力网络需构建高通量无损互联以支撑万卡集群训练。');
+  assert.equal(normalized.outline[0].points.length, 1);
+  assert.equal(normalized.glossary.length, 1);
+  assert.equal(normalized.glossary[0].term, 'NOMA');
+  assert.equal(normalized.glossary[0].importance, '本课重点');
+  assert.doesNotMatch(normalized.glossary[0].definition, /^课程提及/u);
+
+  // 3. When AI returns ONLY truncated fragments across all fields, summarizeCourseWithAi cleanly falls back to zero-AI complete sentences
+  const fallbackRes = await summarizeCourseWithAi({
+    courseId: 'c-trunc-fb',
+    title: '截断回退测试',
+    activeSectionId: 's1',
+    sections: [{
+      sectionId: 's1',
+      sectionIndex: 1,
+      title: '测试节',
+      active: true,
+      cues: [{ startMs: 5000, endMs: 12000, text: '算力网络通过高通量无损互联提升万卡级智算集群训练效率。' }],
+    }],
+  }, { provider: 'deepseek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', apiKey: 'sk-test', transport: 'fetch' }, {
+    scope: 'section',
+    fetchFn: async () => ({
+      status: 200,
+      text: async () => JSON.stringify({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              summary: '这个课讲的是关于算力网络的总体策略介绍然后…',
+              keyPoints: [{ text: '因为输出超长被截断的半句…', time: '00:05' }],
+              outline: [],
+            }),
+          },
+        }],
+      }),
+    }),
+  });
+  assert.equal(fallbackRes.usedAi, false);
+  assert.equal(fallbackRes.fallback, true);
+  assert.equal(hasTrailingEllipsis(fallbackRes.tree.overview), false);
+  assert.ok(fallbackRes.tree.sections[0].keyPoints.every(kp => !hasTrailingEllipsis(kp.text)));
+
+  // 4. Frontend render guard + fallback SVG: ZERO trailing ellipsis in rendered DOM & SVG!
+  const dom = new JSDOM(`
+    <div class="course-side-title-row"><span class="text-overflow" title="前端截断防御测试">前端截断防御测试</span></div>
+    <div class="chapter-list chapter-all"><ul><li>
+      <dl class="focus" id="D1show-sectionssec-g1" data-courseId="c-guard"><dt><span class="qcontent" title="第一节">第一节</span></dt></dl>
+      <dl id="D1show-sectionssec-g2" data-courseId="c-guard"><dt><span class="qcontent" title="第二节">第二节</span></dt></dl>
+    </li></ul></div>
+  `, { url: 'https://wangda.chinamobile.com/#/study/course/detail/c-guard/6' });
+  try {
+    const win = dom.window;
+    const state = { status: 'paused', message: '已暂停', unavailable: false, window: { start: '09:00', end: '24:00' }, tasks: [], activeTaskId: null, currentCourseId: null, currentSectionTitle: '', candidates: [], draft: null, problem: null };
+    const controller = { getState: () => structuredClone(state), subscribe: () => () => {}, diagnose: () => ({ kind: 'course' }) };
+    const fakeTree = {
+      mode: 'ai',
+      scope: 'course',
+      scopeLabel: '整门课（共 2 节，其中 2 节含字幕）',
+      courseId: 'c-guard',
+      activeSectionId: 'sec-g1',
+      courseTitle: '前端截断防御测试',
+      overview: '全课讲清以网强算与无损互联的落地策略。后半截被意外截断…',
+      courseKeyPoints: [
+        { text: '这条被截断的全课要点不应展示…', sectionId: 'sec-g1', sectionIndex: 1, sectionTitle: '第一节', seconds: 10 },
+        { text: '高通量无损网络显著提升跨集群算力利用率。', sectionId: 'sec-g2', sectionIndex: 2, sectionTitle: '第二节', seconds: 25 },
+      ],
+      hasAnySubtitle: true,
+      noSubtitle: false,
+      sections: [
+        {
+          sectionId: 'sec-g1',
+          sectionIndex: 1,
+          title: '第一节',
+          mode: 'ai',
+          hasSubtitle: true,
+          summary: '本节说明算力集群演进带来的互联瓶颈。还有半句被硬切…',
+          keyPoints: [
+            { text: '硬截断要点应被过滤…', seconds: 5 },
+            { text: '万卡级集群对东西向高速互联提出低时延要求。', seconds: 15 },
+          ],
+          outline: [{ name: '互联瓶颈与超长主题名称用于验证离线导图绝不截断', points: [{ text: '无损互联降低训练同步时延，支持万卡级集群高效协同。', seconds: 15 }, { text: '残句大纲项...', seconds: 20 }] }],
+          glossary: [
+            { term: 'NOMA', definition: '国内大型模型服务平台，提供统一智算与推理服务。', isCore: true, importance: '本课重点', seconds: 15 },
+            { term: 'BROKEN', definition: '课程提及：这是一段截断释义…', seconds: 18 },
+          ],
+        },
+        {
+          sectionId: 'sec-g2',
+          sectionIndex: 2,
+          title: '第二节',
+          mode: 'ai',
+          hasSubtitle: true,
+          summary: '以网强算架构打通云网边端协同调度链路。',
+          keyPoints: [{ text: '高通量无损网络显著提升跨集群算力利用率。', seconds: 25 }],
+          outline: [],
+          glossary: [],
+        },
+      ],
+    };
+    const mockKnowledge = {
+      providers: [],
+      privacyNotice: WD_AI_PRIVACY_NOTICE,
+      getSettings: () => ({ provider: 'deepseek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', transport: 'auto', apiKey: 'sk-x' }),
+      saveSettings: () => ({ ok: true, settings: { apiKey: '' } }),
+      clearApiKey: () => ({ ok: true }),
+      abort() {},
+      mapOptions: { skipCdn: true },
+      analyze: async () => ({
+        courseData: { courseId: 'c-guard', title: '前端截断防御测试', activeSectionId: 'sec-g1', captionedSections: 2, hasAnySubtitle: true, sections: fakeTree.sections },
+        estimates: {},
+        tree: fakeTree,
+        markdown: buildKnowledgeMarkdown(fakeTree),
+        usedAi: true,
+        fallback: false,
+        noSubtitle: false,
+      }),
+      seek: () => ({ ok: true, message: 'ok' }),
+    };
+    const panel = createPanel(win, controller, '0.1.0-beta.21', mockKnowledge);
+    panel.open();
+    const root = win.document.getElementById('wangda-assistant').shadowRoot;
+    root.querySelector('[data-action="knowledge-open"]').click();
+    for (let i = 0; i < 40; i += 1) await Promise.resolve();
+    const quickPane = root.querySelector('[data-kg-pane="quick"]');
+    assert.ok(quickPane);
+    const renderedTexts = [
+      ...quickPane.querySelectorAll('.kg-one-line, .kg-kp-text, .kg-points li > span, .kg-term-def, .kg-topic-fold > summary > span:first-child'),
+    ].map(el => el.textContent.trim());
+    assert.ok(renderedTexts.length >= 5);
+    for (const txt of renderedTexts) {
+      assert.equal(hasTrailingEllipsis(txt), false, `前端展示文本不得以省略号结尾: ${txt}`);
+    }
+    assert.equal(quickPane.textContent.includes('这条被截断的全课要点不应展示'), false);
+    assert.equal(quickPane.textContent.includes('BROKEN'), false);
+    assert.equal(quickPane.textContent.includes('【第一节】'), false, '全课要点正文不应把【课节标题】重复拼入句首');
+    assert.match(quickPane.querySelector('[data-kg-glossary]').textContent, /本课重点/u);
+    // Fallback SVG mindmap nodes must also not append ellipsis
+    const svgTexts = [...root.querySelectorAll('svg[data-kg-svg] text')].map(t => t.textContent.trim());
+    assert.ok(svgTexts.length > 0);
+    for (const st of svgTexts) {
+      assert.equal(hasTrailingEllipsis(st), false, `离线导图节点不得以省略号硬截断: ${st}`);
+    }
+    panel.destroy();
+  } finally {
+    dom.window.close();
+  }
+});
+
+test('缓存 schema 升级（v3）后旧版 v1 缓存与缺失/旧 schemaVersion 缓存均不命中', async () => {
+  const dom = new JSDOM(`
+    <div class="course-side-title-row"><span class="text-overflow" title="缓存失效测试课">缓存失效测试课</span></div>
+    <div class="chapter-list chapter-all"><ul><li>
+      <dl class="focus" id="D1show-sectionssec-v1" data-courseId="c-oldcache"><dt><span class="qcontent" title="第一节">第一节</span></dt></dl>
+    </li></ul></div>
+  `, { url: 'https://wangda.chinamobile.com/#/study/course/detail/c-oldcache/6' });
+  try {
+    const win = dom.window;
+    assert.equal(WD_AI_STORAGE_KEYS.cache, 'wangda-assistant.ai.cache.v3');
+    assert.ok(WD_AI_CACHE_SCHEMA_VERSION >= 3);
+    const cacheKey = buildKnowledgeCacheKey('c-oldcache', 'section', 'sec-v1');
+
+    // 1. Legacy v1 localStorage entry with old ellipsis data MUST NOT hit
+    const legacyEntry = {
+      cachedAt: Date.now(),
+      provider: 'deepseek',
+      model: 'deepseek-chat',
+      scope: 'section',
+      usedAi: true,
+      fallback: false,
+      markdown: '# 旧缓存',
+      tree: {
+        courseTitle: '缓存失效测试课',
+        overview: '旧缓存省略号残句…',
+        sections: [{ sectionId: 'sec-v1', title: '第一节', summary: '零 AI 提炼（首段摘要）：旧缓存…', keyPoints: [{ text: '旧缓存残句…', seconds: 3 }] }],
+      },
+    };
+    win.localStorage.setItem('wangda-assistant.ai.cache.v1', JSON.stringify({ [cacheKey]: legacyEntry }));
+    assert.equal(loadKnowledgeCache(win, cacheKey), null, '旧版 v1 存储键缓存不得再命中');
+
+    // 2. Entry written under v2 key but missing or outdated schemaVersion MUST NOT hit
+    win.localStorage.setItem(WD_AI_STORAGE_KEYS.cache, JSON.stringify({ [cacheKey]: { ...legacyEntry, schemaVersion: 1 } }));
+    assert.equal(loadKnowledgeCache(win, cacheKey), null, 'schemaVersion 过期的缓存不得命中');
+    win.localStorage.setItem(WD_AI_STORAGE_KEYS.cache, JSON.stringify({ [cacheKey]: legacyEntry }));
+    assert.equal(loadKnowledgeCache(win, cacheKey), null, '缺少 schemaVersion 的缓存不得命中');
+
+    // 3. KnowledgeService.analyze({ preferCacheOnOpen: true }) ignores legacy cache and generates fresh zero-AI complete guide
+    const pageWin = {
+      videojs: {
+        getPlayers: () => ({
+          p1: {
+            isDisposed: () => false,
+            el: () => win.document.body,
+            textTracks: () => [{ kind: 'captions', label: '开启', cues: [{ startTime: 5, endTime: 12, text: '新版缓存升级后只展示完整句子要点。' }] }],
+          },
+        }),
+      },
+    };
+    const svc = createKnowledgeService({ win, pageWin });
+    const res = await svc.analyze({ scope: 'section', sectionId: 'sec-v1', useAi: false, preferCacheOnOpen: true });
+    assert.equal(res.fromCache, false, '旧缓存不得被秒开命中');
+    assert.equal(res.tree.sections[0].summary.includes('旧缓存'), false);
+    assert.equal(hasTrailingEllipsis(res.tree.sections[0].summary), false);
+
+    // 4. Newly saved v2 cache with current schemaVersion DOES hit cleanly
+    assert.equal(saveKnowledgeCache(win, cacheKey, { tree: { courseTitle: '新课', sections: [] }, markdown: '# 新课', usedAi: true }), true);
+    const loaded = loadKnowledgeCache(win, cacheKey);
+    assert.ok(loaded);
+    assert.equal(loaded.schemaVersion, WD_AI_CACHE_SCHEMA_VERSION);
+  } finally {
+    dom.window.close();
+  }
+});
+
+test('来源明确区分与回退提示：无 Key 本地摘要 / 已配 Key 本地摘要 / 失败降级明示原因与局部降级 / AI 生成纯净态 + 直达 AI 设置', async () => {
+  const dom = new JSDOM(`
+    <div class="course-side-title-row"><span class="text-overflow" title="算力网络实战课">算力网络实战课</span></div>
+    <div class="chapter-list chapter-all"><ul><li>
+      <div class="list-title">第一章</div>
+      <dl class="focus" id="D1show-sectionssec-s1" data-courseId="c-dist" data-resourceId="att-1">
+        <dt><span class="qcontent" title="第1节 算力需求演变">第1节 算力需求演变</span></dt>
+        <dd><div class="item continue pointer"><span>学习中</span></div></dd>
+      </dl>
+      <dl id="D1show-sectionssec-s2" data-courseId="c-dist" data-resourceId="att-2">
+        <dt><span class="qcontent" title="第2节 以网强算架构">第2节 以网强算架构</span></dt>
+        <dd><div class="item continue pointer"><span>已完成</span></div></dd>
+      </dl>
+    </li></ul></div>
+  `, { url: 'https://wangda.chinamobile.com/#/study/course/detail/c-dist/6' });
+  try {
+    const win = dom.window;
+    const state = { status: 'paused', message: '已暂停', unavailable: false, window: { start: '09:00', end: '24:00' }, tasks: [], activeTaskId: null, currentCourseId: null, currentSectionTitle: '', candidates: [], draft: null, problem: null };
+    const controller = { getState: () => structuredClone(state), subscribe: () => () => {}, diagnose: () => ({ kind: 'course' }) };
+    const pageWin = {
+      location: win.location,
+      app: {
+        _modules: {
+          'study/course/detail--c-dist': {
+            store: {
+              models: {
+                course: {
+                  data: {
+                    id: 'c-dist',
+                    name: '算力网络实战课',
+                    courseChapters: [{
+                      name: '第一章',
+                      courseChapterSections: [
+                        { id: 'sec-s1', name: '第1节 算力需求演变', attachmentId: 'att-1' },
+                        { id: 'sec-s2', name: '第2节 以网强算架构', attachmentId: 'att-2' },
+                      ],
+                    }],
+                  },
+                },
+                trackList: {
+                  data: [
+                    { attachmentId: 'att-1', captionVtt: 'https://wangda.chinamobile.com/default/M00/dist1.vtt' },
+                    { attachmentId: 'att-2', captionVtt: 'https://wangda.chinamobile.com/default/M00/dist2.vtt' },
+                  ],
+                },
+              },
+            },
+          },
+        },
+      },
+    };
+
+    let llmBehavior = 'quota-429';
+    const fakeFetch = async (url, init = {}) => {
+      if (String(url).includes('dist1.vtt')) {
+        return { status: 200, text: async () => 'WEBVTT\n\n00:00:10.000 --> 00:00:20.000\nToken 时代推动算力需求全面向大规模智能计算转型。\n' };
+      }
+      if (String(url).includes('dist2.vtt')) {
+        return { status: 200, text: async () => 'WEBVTT\n\n00:00:15.000 --> 00:00:25.000\n以网强算通过高通量无损网络显著提升跨集群算力协同效率。\n' };
+      }
+      const userMsg = JSON.parse(init.body || '{}')?.messages?.[1]?.content || '';
+      if (llmBehavior === 'quota-429') {
+        return { status: 429, text: async () => '{"error":{"message":"insufficient_quota"}}' };
+      }
+      if (llmBehavior === 'partial-fail') {
+        if (userMsg.includes('以网强算架构')) {
+          return { status: 402, text: async () => '{"error":{"message":"balance depleted"}}' };
+        }
+        return {
+          status: 200,
+          text: async () => JSON.stringify({
+            choices: [{
+              message: {
+                content: JSON.stringify({
+                  summary: 'AI 生成：Token 爆发倒逼算力基础设施向智算互联全面转型。',
+                  keyPoints: [{ text: 'Token 爆发推动算力从通用计算转向大规模智能计算。', time: '00:10' }],
+                  outline: [{ name: '智算需求升级', points: [{ text: '通用计算向智算集群演进。', time: '00:10' }] }],
+                }),
+              },
+            }],
+          }),
+        };
+      }
+      // Full AI success
+      if (userMsg.includes('各课节摘要与要点')) {
+        return {
+          status: 200,
+          text: async () => JSON.stringify({
+            choices: [{
+              message: {
+                content: JSON.stringify({
+                  overview: 'AI 生成全课总览：从 Token 智算需求演进到以网强算无损互联协同方案。',
+                  keyPoints: [
+                    { text: 'Token 爆发推动算力需求全面转向大规模智算集群。', sectionId: 'sec-s1', time: '00:10' },
+                    { text: '以网强算通过高通量无损网络提升跨集群协同算效。', sectionId: 'sec-s2', time: '00:15' },
+                  ],
+                }),
+              },
+            }],
+          }),
+        };
+      }
+      return {
+        status: 200,
+        text: async () => JSON.stringify({
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                summary: userMsg.includes('以网强算架构')
+                  ? 'AI 生成：以网强算通过高通量无损网络提升跨集群算力协同效率。'
+                  : 'AI 生成：Token 爆发倒逼算力基础设施向智算互联全面转型。',
+                keyPoints: [{
+                  text: userMsg.includes('以网强算架构')
+                    ? '以网强算架构通过高通量无损网络提升跨集群协同算效。'
+                    : 'Token 爆发推动算力需求全面转向大规模智算集群。',
+                  time: userMsg.includes('以网强算架构') ? '00:15' : '00:10',
+                }],
+                outline: [{ name: '核心主线', points: [{ text: '关键技术与方案落地。', time: '00:10' }] }],
+              }),
+            },
+          }],
+        }),
+      };
+    };
+
+    const knowledge = createKnowledgeService({ win, pageWin, controller, fetchFn: fakeFetch });
+    knowledge.mapOptions = { skipCdn: true };
+    const panel = createPanel(win, controller, '0.1.0-beta.21', knowledge);
+    panel.open();
+    const root = win.document.getElementById('wangda-assistant').shadowRoot;
+
+    // 1. State A: No API Key -> local summary with explicit callout & direct "前往 AI 设置" jump
+    root.querySelector('[data-action="knowledge-open"]').click();
+    for (let i = 0; i < 60; i += 1) await Promise.resolve();
+    let modal = root.querySelector('[data-knowledge-modal]');
+    assert.equal(modal.querySelector('[data-kg-mode]').textContent, '本地摘要（未使用 AI）');
+    const calloutA = modal.querySelector('[data-kg-pane="quick"] [data-kg-source-callout]');
+    assert.ok(calloutA, '无 Key 时速览区必须显示本地摘要可见提示');
+    assert.equal(calloutA.dataset.sourceState, 'local-no-key');
+    assert.match(calloutA.querySelector('[data-kg-source-callout-title]').textContent, /当前为本地摘要（未使用 AI），开启\/修复 AI 解读可获得完整讲解/u);
+    assert.ok(calloutA.querySelector('[data-action="kg-callout-settings"]'), '必须提供直达 AI 设置的按钮');
+    assert.ok(modal.querySelector('[data-kg-pane="detail"] [data-kg-source-callout]'), '细读区同样展示本地摘要提示');
+    const quickBadgesA = [...modal.querySelectorAll('[data-kg-pane="quick"] [data-kg-source-badge]')].map(b => b.textContent);
+    assert.ok(quickBadgesA.length >= 3 && quickBadgesA.every(t => t === '本地摘要'), `所有卡片应清晰标注本地摘要，实际: ${quickBadgesA}`);
+
+    // Clicking "前往 AI 设置" closes modal, opens settings accordion, and focuses API Key input
+    calloutA.querySelector('[data-action="kg-callout-settings"]').click();
+    assert.equal(root.querySelector('[data-knowledge-modal]'), null, '点击前往 AI 设置应关闭弹窗并进入设置区');
+    assert.equal(root.querySelector('[data-settings]').open, true, '设置折叠面板应自动展开');
+
+    // 2. State B: Key configured, default local summary -> shows callout with one-click "立即 AI 解读" + "前往 AI 设置"
+    saveAiSettings(win, { provider: 'deepseek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', apiKey: 'sk-valid-key', transport: 'fetch' });
+    root.querySelector('[data-action="knowledge-open"]').click();
+    for (let i = 0; i < 60; i += 1) await Promise.resolve();
+    modal = root.querySelector('[data-knowledge-modal]');
+    const calloutB = modal.querySelector('[data-kg-pane="quick"] [data-kg-source-callout]');
+    assert.equal(calloutB.dataset.sourceState, 'local-ready');
+    assert.ok(calloutB.querySelector('[data-action="kg-callout-run-ai"]'), '已配置 Key 时应提供一键「立即 AI 解读」入口');
+    assert.ok(calloutB.querySelector('[data-action="kg-callout-settings"]'));
+
+    // 3. State C: Full AI failure (HTTP 429 quota) -> NEVER silent fallback; explicitly displays quota reason + "修复 AI 设置"
+    llmBehavior = 'quota-429';
+    calloutB.querySelector('[data-action="kg-callout-run-ai"]').click();
+    for (let i = 0; i < 80; i += 1) await Promise.resolve();
+    assert.equal(modal.querySelector('[data-kg-mode]').textContent, '本地摘要 · AI 失败已回退');
+    const calloutC = modal.querySelector('[data-kg-pane="quick"] [data-kg-source-callout]');
+    assert.equal(calloutC.dataset.sourceState, 'fallback-error');
+    assert.match(calloutC.querySelector('[data-kg-source-callout-title]').textContent, /当前为本地摘要（未使用 AI），开启\/修复 AI 解读可获得完整讲解/u);
+    assert.match(calloutC.querySelector('[data-kg-source-callout-desc]').textContent, /额度耗尽|HTTP 429/u, '降级提示必须明示失败原因');
+    assert.equal(calloutC.querySelector('[data-action="kg-callout-settings"]').textContent, '修复 AI 设置');
+    const badgesC = [...modal.querySelectorAll('[data-kg-pane="quick"] [data-kg-source-badge]')].map(b => b.textContent);
+    assert.ok(badgesC.every(t => t === '本地摘要（降级）'));
+
+    // 4. State D: Partial failure (sec-s1 AI success, sec-s2 HTTP 402 balance depleted) -> per-card source distinction!
+    llmBehavior = 'partial-fail';
+    modal.querySelector('[data-action="kg-ai-course"]').click();
+    for (let i = 0; i < 80; i += 1) await Promise.resolve();
+    assert.equal(modal.querySelector('[data-kg-mode]').textContent, 'AI 生成 · 局部降级本地摘要');
+    const calloutD = modal.querySelector('[data-kg-pane="quick"] [data-kg-source-callout]');
+    assert.equal(calloutD.dataset.sourceState, 'partial-fallback');
+    assert.match(calloutD.querySelector('[data-kg-source-callout-desc]').textContent, /余额不足|HTTP 402/u);
+    assert.equal(modal.querySelector('[data-kg-section-card="sec-s1"] [data-kg-source-badge]').textContent, 'AI 生成');
+    assert.equal(modal.querySelector('[data-kg-section-card="sec-s2"] [data-kg-source-badge]').textContent, '本地摘要（降级）');
+    assert.match(modal.querySelector('[data-kg-sec-fallback-note="sec-s2"]').textContent, /余额不足|HTTP 402/u);
+
+    // 5. State E: Full AI success -> every card shows "AI 生成", NO local-summary callout banner, full AI quality intact!
+    llmBehavior = 'ok';
+    modal.querySelector('[data-action="kg-regenerate"]').click();
+    for (let i = 0; i < 100; i += 1) await Promise.resolve();
+    assert.equal(modal.querySelector('[data-kg-mode]').textContent, 'AI 生成');
+    assert.equal(modal.querySelector('[data-kg-pane="quick"] [data-kg-source-callout]'), null, 'AI 生成成功态不应显示本地摘要回退提示');
+    assert.equal(modal.querySelector('[data-kg-pane="detail"] [data-kg-source-callout]'), null);
+    const badgesE = [...modal.querySelectorAll('[data-kg-pane="quick"] [data-kg-source-badge]')].map(b => b.textContent);
+    assert.ok(badgesE.length >= 3 && badgesE.every(t => t === 'AI 生成'), `AI 成功态所有卡片应标注 AI 生成，实际: ${badgesE}`);
+    assert.match(modal.querySelector('[data-kg-overview]').textContent, /AI 生成全课总览/u);
 
     panel.destroy();
   } finally {

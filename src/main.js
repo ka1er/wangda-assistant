@@ -21,6 +21,7 @@ function wdMainBootstrap(win) {
     pageWin,
     controller,
     adapter,
+    gmStorage: storage,
     gmRequest: typeof GM_xmlhttpRequest === 'function' ? GM_xmlhttpRequest : null,
   });
   const panel = createPanel(win, controller, wdMainVersion, knowledge);

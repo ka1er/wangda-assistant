@@ -1,5 +1,7 @@
-import { cleanAndSegmentCues, formatTimestamp, parseTimestampToSeconds, buildSeekHref, createSubtitleAvailabilityProber } from './knowledge-vtt.js';
-import { WD_AI_STORAGE_KEYS, loadAiSettings, buildChatCompletionsUrl, sendAiHttpRequest, parseStrictJsonContent } from './knowledge-ai.js';
+import { WD_LEGACY_STORAGE_KEYS, ensureStorageMigrated, readCourseAssetShard, writeCourseAssetShard, recordWrongQuestionAsset, updateSectionMasteryAsset } from './knowledge-storage.js';
+import { cleanAndSegmentCues, formatTimestamp, parseTimestampToSeconds, buildSeekHref, createSubtitleAvailabilityProber, sanitizeCompleteText } from './knowledge-vtt.js';
+import { buildSegmentIndex, verifyCitation, extractSegmentIdsFromText, normalizeSegmentId } from './knowledge-citations.js';
+import { WD_AI_STORAGE_KEYS, loadAiSettings, validateAiEndpoint, invokeAiChat, parseStrictJsonContent } from './knowledge-ai.js';
 
 export function sectionHasSubtitle(section) {
   if (!section) return false;
@@ -12,18 +14,14 @@ export function sectionHasSubtitle(section) {
 }
 
 export const WD_TUTOR_STORAGE_KEYS = {
-  qa: 'wangda-assistant.ai.qa.v1',
-  quiz: 'wangda-assistant.ai.quiz.v1',
+  qa: WD_LEGACY_STORAGE_KEYS.qa,
+  quiz: WD_LEGACY_STORAGE_KEYS.quiz,
 };
 
-const wdKtutMaxStoredSections = 30;
-const wdKtutMaxMessagesPerSection = 24;
+const wdKtutMaxMessagesPerSession = 60;
 const wdKtutHistoryTurnsForPrompt = 6;
 const wdKtutStyleId = 'wd-section-guide-entry-style';
-
-function wdKtutStorage(win) {
-  try { return win?.localStorage || null; } catch { return null; }
-}
+let wdKtutSessionSeq = 0;
 
 export function buildTutorSectionKey(courseId, sectionId) {
   const cid = String(courseId || 'unknown').trim() || 'unknown';
@@ -31,78 +29,271 @@ export function buildTutorSectionKey(courseId, sectionId) {
   return `${cid}::${sid}`;
 }
 
-function wdKtutReadStore(win, storageKey) {
-  const ls = wdKtutStorage(win);
-  try {
-    const raw = ls?.getItem?.(storageKey);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
-  } catch {
-    return {};
+function wdKtutNormalizeSectionChatEntry(rawEntry) {
+  if (!rawEntry || typeof rawEntry !== 'object') {
+    const now = Date.now();
+    return {
+      activeSessionId: 'default',
+      updatedAt: null,
+      sessions: {
+        default: { id: 'default', title: '默认问答', kind: 'general', createdAt: now, updatedAt: null, messages: [] },
+      },
+    };
   }
-}
-
-function wdKtutWriteStore(win, storageKey, map) {
-  const ls = wdKtutStorage(win);
-  if (!ls || typeof ls.setItem !== 'function') return false;
-  const entries = Object.entries(map)
-    .filter(([, v]) => v && typeof v === 'object')
-    .sort((a, b) => (Number(b[1].updatedAt || b[1].cachedAt) || 0) - (Number(a[1].updatedAt || a[1].cachedAt) || 0));
-  for (let limit = Math.min(entries.length, wdKtutMaxStoredSections); limit >= 1; limit -= 1) {
-    try {
-      ls.setItem(storageKey, JSON.stringify(Object.fromEntries(entries.slice(0, limit))));
-      return true;
-    } catch { /* evict oldest entry on quota error */ }
+  // Legacy shape: { updatedAt, messages: [...] }
+  if (Array.isArray(rawEntry.messages) && !rawEntry.sessions) {
+    const ts = Number(rawEntry.updatedAt) || Date.now();
+    return {
+      activeSessionId: 'default',
+      updatedAt: rawEntry.updatedAt || null,
+      sessions: {
+        default: { id: 'default', title: '默认问答', kind: 'general', createdAt: ts, updatedAt: ts, messages: rawEntry.messages },
+      },
+    };
   }
-  return false;
+  const rawSessions = rawEntry.sessions && typeof rawEntry.sessions === 'object' ? rawEntry.sessions : {};
+  const sessions = {};
+  for (const [id, sess] of Object.entries(rawSessions)) {
+    if (!sess || typeof sess !== 'object') continue;
+    sessions[id] = {
+      id: String(sess.id || id),
+      title: String(sess.title || (id === 'default' ? '默认问答' : '问答会话')),
+      kind: sess.kind === 'deepdive' ? 'deepdive' : 'general',
+      quizQuestionId: sess.quizQuestionId || null,
+      createdAt: Number(sess.createdAt) || Date.now(),
+      updatedAt: Number(sess.updatedAt) || null,
+      messages: Array.isArray(sess.messages) ? sess.messages : [],
+    };
+  }
+  if (!Object.keys(sessions).length) {
+    const now = Date.now();
+    sessions.default = { id: 'default', title: '默认问答', kind: 'general', createdAt: now, updatedAt: null, messages: [] };
+  }
+  const activeSessionId = rawEntry.activeSessionId && sessions[rawEntry.activeSessionId]
+    ? rawEntry.activeSessionId
+    : Object.keys(sessions)[0];
+  return {
+    activeSessionId,
+    updatedAt: Number(rawEntry.updatedAt) || sessions[activeSessionId]?.updatedAt || null,
+    sessions,
+  };
 }
 
-export function loadSectionChat(win, courseId, sectionId) {
+export function loadSectionChat(win, courseId, sectionId, sessionId = null) {
+  ensureStorageMigrated(win);
   const key = buildTutorSectionKey(courseId, sectionId);
-  const entry = wdKtutReadStore(win, WD_TUTOR_STORAGE_KEYS.qa)[key];
-  if (!entry || !Array.isArray(entry.messages)) return { key, messages: [], updatedAt: null };
-  return { key, messages: entry.messages, updatedAt: entry.updatedAt || null };
+  const sid = String(sectionId || 'current').trim() || 'current';
+  const shard = readCourseAssetShard(win, courseId, 'qa');
+  const container = wdKtutNormalizeSectionChatEntry(shard.data?.[sid]);
+  const targetId = sessionId && container.sessions[sessionId] ? sessionId : container.activeSessionId;
+  const session = container.sessions[targetId];
+  const sessionList = Object.values(container.sessions)
+    .sort((a, b) => (Number(b.updatedAt || b.createdAt) || 0) - (Number(a.updatedAt || a.createdAt) || 0));
+  return {
+    key,
+    activeSessionId: targetId,
+    session,
+    sessions: sessionList,
+    messages: Array.isArray(session?.messages) ? session.messages : [],
+    updatedAt: session?.updatedAt || container.updatedAt || null,
+  };
 }
 
-export function saveSectionChat(win, courseId, sectionId, messages) {
-  const key = buildTutorSectionKey(courseId, sectionId);
-  const map = wdKtutReadStore(win, WD_TUTOR_STORAGE_KEYS.qa);
-  const trimmed = (Array.isArray(messages) ? messages : []).slice(-wdKtutMaxMessagesPerSection);
-  map[key] = { updatedAt: Date.now(), messages: trimmed };
-  return wdKtutWriteStore(win, WD_TUTOR_STORAGE_KEYS.qa, map);
+export function createSectionChatSession(win, courseId, sectionId, options = {}) {
+  ensureStorageMigrated(win);
+  const sid = String(sectionId || 'current').trim() || 'current';
+  const shard = readCourseAssetShard(win, courseId, 'qa');
+  const map = { ...(shard.data || {}) };
+  const container = wdKtutNormalizeSectionChatEntry(map[sid]);
+  wdKtutSessionSeq += 1;
+  const kind = options.kind === 'deepdive' ? 'deepdive' : 'general';
+  const now = Date.now();
+  const newId = options.sessionId || `${kind === 'deepdive' ? 'dd' : 'chat'}-${now}-${wdKtutSessionSeq}`;
+  const title = String(options.title || (kind === 'deepdive' ? '错题深挖会话' : `新会话 ${Object.keys(container.sessions).length + 1}`)).trim();
+  const session = {
+    id: newId,
+    title,
+    kind,
+    quizQuestionId: options.quizQuestionId || null,
+    createdAt: now,
+    updatedAt: now,
+    messages: [],
+  };
+  container.sessions[newId] = session;
+  container.activeSessionId = newId;
+  container.updatedAt = now;
+  map[sid] = container;
+  const writeRes = writeCourseAssetShard(win, courseId, 'qa', map);
+  return { ok: Boolean(writeRes.ok), sessionId: newId, session };
 }
 
-export function clearSectionChat(win, courseId, sectionId) {
-  const ls = wdKtutStorage(win);
-  if (!ls) return false;
-  const key = buildTutorSectionKey(courseId, sectionId);
-  const map = wdKtutReadStore(win, WD_TUTOR_STORAGE_KEYS.qa);
-  delete map[key];
-  try { ls.setItem(WD_TUTOR_STORAGE_KEYS.qa, JSON.stringify(map)); return true; } catch { return false; }
+export function switchSectionChatSession(win, courseId, sectionId, sessionId) {
+  ensureStorageMigrated(win);
+  const sid = String(sectionId || 'current').trim() || 'current';
+  const shard = readCourseAssetShard(win, courseId, 'qa');
+  const map = { ...(shard.data || {}) };
+  const container = wdKtutNormalizeSectionChatEntry(map[sid]);
+  if (!sessionId || !container.sessions[sessionId]) return false;
+  container.activeSessionId = sessionId;
+  container.updatedAt = Date.now();
+  map[sid] = container;
+  return Boolean(writeCourseAssetShard(win, courseId, 'qa', map).ok);
+}
+
+export function saveSectionChat(win, courseId, sectionId, messages, sessionId = null) {
+  ensureStorageMigrated(win);
+  const sid = String(sectionId || 'current').trim() || 'current';
+  const shard = readCourseAssetShard(win, courseId, 'qa');
+  const map = { ...(shard.data || {}) };
+  const container = wdKtutNormalizeSectionChatEntry(map[sid]);
+  const targetId = sessionId || container.activeSessionId || 'default';
+  const now = Date.now();
+  const trimmed = (Array.isArray(messages) ? messages : []).slice(-wdKtutMaxMessagesPerSession);
+  const prevSession = container.sessions[targetId] || {
+    id: targetId,
+    title: targetId === 'default' ? '默认问答' : '问答会话',
+    kind: targetId.startsWith('dd-') ? 'deepdive' : 'general',
+    quizQuestionId: null,
+    createdAt: now,
+  };
+  container.sessions[targetId] = { ...prevSession, updatedAt: now, messages: trimmed };
+  container.activeSessionId = targetId;
+  container.updatedAt = now;
+  map[sid] = container;
+  return Boolean(writeCourseAssetShard(win, courseId, 'qa', map).ok);
+}
+
+export function clearSectionChat(win, courseId, sectionId, sessionId = null) {
+  ensureStorageMigrated(win);
+  const sid = String(sectionId || 'current').trim() || 'current';
+  const shard = readCourseAssetShard(win, courseId, 'qa');
+  const map = { ...(shard.data || {}) };
+  if (!map[sid]) return true;
+  if (!sessionId || sessionId === '*') {
+    delete map[sid];
+  } else {
+    const container = wdKtutNormalizeSectionChatEntry(map[sid]);
+    if (container.sessions[sessionId]) {
+      container.sessions[sessionId].messages = [];
+      container.sessions[sessionId].updatedAt = Date.now();
+    }
+    map[sid] = container;
+  }
+  return Boolean(writeCourseAssetShard(win, courseId, 'qa', map).ok);
 }
 
 export function loadSectionQuiz(win, courseId, sectionId) {
-  const key = buildTutorSectionKey(courseId, sectionId);
-  const entry = wdKtutReadStore(win, WD_TUTOR_STORAGE_KEYS.quiz)[key];
+  ensureStorageMigrated(win);
+  const sid = String(sectionId || 'current').trim() || 'current';
+  const shard = readCourseAssetShard(win, courseId, 'quiz');
+  const entry = shard.data?.[sid];
   if (!entry || !Array.isArray(entry.questions) || !entry.questions.length) return null;
   return entry;
 }
 
 export function saveSectionQuiz(win, courseId, sectionId, quizRecord) {
-  const key = buildTutorSectionKey(courseId, sectionId);
-  const map = wdKtutReadStore(win, WD_TUTOR_STORAGE_KEYS.quiz);
-  map[key] = { ...quizRecord, updatedAt: Date.now() };
-  return wdKtutWriteStore(win, WD_TUTOR_STORAGE_KEYS.quiz, map);
+  ensureStorageMigrated(win);
+  const sid = String(sectionId || 'current').trim() || 'current';
+  const shard = readCourseAssetShard(win, courseId, 'quiz');
+  const map = { ...(shard.data || {}) };
+  map[sid] = { ...quizRecord, updatedAt: Date.now() };
+  return Boolean(writeCourseAssetShard(win, courseId, 'quiz', map).ok);
 }
 
 export function clearSectionQuiz(win, courseId, sectionId) {
-  const ls = wdKtutStorage(win);
-  if (!ls) return false;
-  const key = buildTutorSectionKey(courseId, sectionId);
-  const map = wdKtutReadStore(win, WD_TUTOR_STORAGE_KEYS.quiz);
-  delete map[key];
-  try { ls.setItem(WD_TUTOR_STORAGE_KEYS.quiz, JSON.stringify(map)); return true; } catch { return false; }
+  ensureStorageMigrated(win);
+  const sid = String(sectionId || 'current').trim() || 'current';
+  const shard = readCourseAssetShard(win, courseId, 'quiz');
+  const map = { ...(shard.data || {}) };
+  delete map[sid];
+  return Boolean(writeCourseAssetShard(win, courseId, 'quiz', map).ok);
+}
+
+export function submitSectionQuizAttempt(win, courseId, sectionId, quizRecord, answers = {}) {
+  const questions = Array.isArray(quizRecord?.questions) ? quizRecord.questions : [];
+  const graded = gradeSectionQuiz(questions, answers);
+  const nextAttempt = {
+    answers: { ...(answers || {}) },
+    submitted: true,
+    submittedAt: Date.now(),
+    choiceTotal: graded.choiceTotal,
+    choiceCorrect: graded.choiceCorrect,
+  };
+  const updatedRecord = { ...quizRecord, attempt: nextAttempt };
+  saveSectionQuiz(win, courseId, sectionId, updatedRecord);
+
+  const wrongQuestions = [];
+  for (const q of questions) {
+    if (q.type !== 'choice') continue;
+    const detail = graded.details[q.id];
+    if (detail && !detail.correct) {
+      wrongQuestions.push(q);
+      recordWrongQuestionAsset(win, courseId, {
+        sectionId,
+        sectionTitle: quizRecord?.sectionTitle || '',
+        questionId: q.id,
+        question: q.question,
+        options: q.options,
+        chosenIndex: detail.chosen,
+        correctIndex: q.correctIndex,
+        answerLetter: q.answerLetter,
+        explanation: q.explanation,
+        citation: q.citation || (q.segId ? { segId: q.segId, refKey: q.refKey, seconds: q.seconds, timestamp: q.timestamp } : null),
+      });
+    }
+  }
+
+  const masteryStatus = graded.choiceTotal > 0
+    ? (wrongQuestions.length === 0 ? 'mastered' : 'weak')
+    : 'reviewed';
+  updateSectionMasteryAsset(win, courseId, sectionId, {
+    status: masteryStatus,
+    score: graded.percent,
+    wrongCount: wrongQuestions.length,
+    lastQuizAt: nextAttempt.submittedAt,
+  });
+
+  return { graded, attempt: nextAttempt, wrongQuestions, quiz: updatedRecord };
+}
+
+export function buildWrongQuestionDeepDivePrompt({ question, chosenIndex = null, section = null, segmentIndex = null } = {}) {
+  if (!question || typeof question !== 'object') return '';
+  const segIdx = segmentIndex || (section ? buildSegmentIndex(section) : null);
+  const optionsText = Array.isArray(question.options) && question.options.length
+    ? question.options.join(' / ')
+    : '';
+  const chosenText = Number.isInteger(chosenIndex) && Array.isArray(question.options) && question.options[chosenIndex]
+    ? question.options[chosenIndex]
+    : '未作答';
+  const correctText = question.type === 'choice'
+    ? (question.options?.[question.correctIndex] || question.answerLetter || '')
+    : (question.referenceAnswer || '');
+
+  let citePart = '';
+  const cite = question.citation || null;
+  if (cite?.verified && cite.segId) {
+    const excerpt = cite.excerpt || segIdx?.byId?.get?.(cite.segId)?.text || '';
+    citePart = `引用依据：${cite.displayId || `[${cite.segId}]`}（${cite.timestamp || formatTimestamp(cite.seconds || 0)}）原字幕：「${excerpt.slice(0, 180)}」`;
+  } else if (question.segId && segIdx?.byId?.has?.(question.segId)) {
+    const seg = segIdx.byId.get(question.segId);
+    citePart = `引用依据：[${seg.segId}]（${seg.timestamp}）原字幕：「${seg.text.slice(0, 180)}」`;
+  } else if (Number.isFinite(question.seconds) && segIdx) {
+    const seg = segIdx.findSegmentBySeconds(question.seconds);
+    if (seg) citePart = `引用依据：[${seg.segId}]（${seg.timestamp}）原字幕：「${seg.text.slice(0, 180)}」`;
+  } else if (cite && !cite.verified) {
+    citePart = `引用状态：原题标注 ${cite.rawRef || '无编号'} 未通过原文核验（${cite.reason || '待核实'}），请严格依据本节原字幕编号作答`;
+  }
+
+  const parts = [
+    `【错题深挖】题干：${question.question}`,
+    optionsText ? `选项：${optionsText}` : '',
+    question.type === 'choice' ? `我的错选：${chosenText}` : '',
+    `正确答案：${correctText}`,
+    question.explanation ? `题目解析：${question.explanation}` : '',
+    citePart,
+    '请帮我深挖这道题：1）为什么我的选择不对；2）正确答案的关键逻辑是什么；3）结合原字幕段落编号 [Sxx] 举一个易懂的例子帮助巩固。',
+  ].filter(Boolean);
+  return parts.join('；');
 }
 
 function wdKtutExtractQueryTerms(query) {
@@ -125,25 +316,20 @@ function wdKtutExtractQueryTerms(query) {
 
 export function selectRelevantSectionContext(section, query = '', options = {}) {
   const maxContextChars = Number.isFinite(options.maxContextChars) ? options.maxContextChars : 7500;
-  const rawSegments = Array.isArray(section?.segments) && section.segments.length
-    ? section.segments
-    : Array.isArray(section?.timeline) && section.timeline.length
-      ? section.timeline.map((t, idx) => ({
-        index: t.index || idx + 1,
-        startSec: Number.isFinite(t.startSec) ? t.startSec : 0,
-        timestamp: t.timestamp || formatTimestamp(t.startSec || 0),
-        text: t.text || t.headline || '',
-      }))
-      : cleanAndSegmentCues(section?.cues || []).segments;
+  const segmentIndex = buildSegmentIndex(section, {
+    sectionId: section?.sectionId || 'current',
+    durationSec: section?.durationSec,
+  });
+  const rawSegments = segmentIndex.segments;
 
   const headerLines = [];
   if (section?.summary) headerLines.push(`【课节概览】${section.summary}`);
   if (Array.isArray(section?.keyPoints) && section.keyPoints.length) {
-    headerLines.push(`【核心要点】${section.keyPoints.map(k => `${k.text}${k.timestamp ? `(${k.timestamp})` : ''}`).join('；')}`);
+    headerLines.push(`【核心要点】${section.keyPoints.map(k => `${k.text}${k.segId ? `[${k.segId}]` : (k.timestamp ? `(${k.timestamp})` : '')}`).join('；')}`);
   }
   const outline = Array.isArray(section?.outline) && section.outline.length ? section.outline : (section?.topics || []);
   if (outline.length) {
-    headerLines.push(`【知识点大纲】${outline.map(t => `${t.name}: ${(t.points || []).map(p => `${p.text}${p.timestamp ? `(${p.timestamp})` : ''}`).join('、')}`).join(' | ')}`);
+    headerLines.push(`【知识点大纲】${outline.map(t => `${t.name}: ${(t.points || []).map(p => `${p.text}${p.segId ? `[${p.segId}]` : (p.timestamp ? `(${p.timestamp})` : '')}`).join('、')}`).join(' | ')}`);
   }
   const headerText = headerLines.join('\n').slice(0, Math.floor(maxContextChars * 0.25));
   const segBudget = Math.max(800, maxContextChars - headerText.length - 80);
@@ -152,8 +338,8 @@ export function selectRelevantSectionContext(section, query = '', options = {}) 
     const startSec = Number.isFinite(seg.startSec) ? Math.floor(seg.startSec) : Math.floor((Number(seg.startMs) || 0) / 1000);
     const ts = seg.timestamp || formatTimestamp(startSec);
     const minute = Math.floor(startSec / 60) + 1;
-    const line = `[${ts} · 约第${minute}分钟] ${String(seg.text || '').trim()}`;
-    return { idx, startSec, ts, line, textLower: String(seg.text || '').toLowerCase() };
+    const line = `[${seg.segId}] [${ts} · 约第${minute}分钟] ${String(seg.text || '').trim()}`;
+    return { idx, segId: seg.segId, startSec, ts, line, textLower: String(seg.text || '').toLowerCase() };
   });
 
   const totalChars = formatted.reduce((sum, s) => sum + s.line.length + 1, 0);
@@ -221,9 +407,10 @@ export function selectRelevantSectionContext(section, query = '', options = {}) 
   const transcriptBlock = chosen.length
     ? chosen.map(c => c.line).join('\n')
     : '（本课节暂无字幕原文，仅可依据上方标题或知识点作答）';
-  const contextText = [headerText, '【带时间戳字幕片段】', transcriptBlock].filter(Boolean).join('\n\n');
+  const contextText = [headerText, '【带分段编号的字幕原文（引用时只写编号如 [S01]）】', transcriptBlock].filter(Boolean).join('\n\n');
   return {
     contextText,
+    segmentIndex,
     totalSegments: formatted.length,
     selectedSegments: chosen.length,
     truncated,
@@ -235,57 +422,83 @@ export function selectRelevantSectionContext(section, query = '', options = {}) 
 export function extractTimestampsFromText(text) {
   const seen = new Set();
   const out = [];
-  for (const m of String(text ?? '').matchAll(/(?<!\d)(\d{1,2}:\d{2}(?::\d{2})?)(?!\d)/gu)) {
-    const sec = parseTimestampToSeconds(m[1]);
-    if (sec === null) continue;
-    const floorSec = Math.floor(sec);
-    if (seen.has(floorSec)) continue;
-    seen.add(floorSec);
+  for (const m of String(text ?? '').matchAll(/(?<!\d)(-?\d{1,2}:\d{2}(?::\d{2})?)(?!\d)/gu)) {
+    const raw = m[1];
+    const isNeg = raw.startsWith('-');
+    const sec = isNeg ? -1 : parseTimestampToSeconds(raw);
+    if (!isNeg && sec === null) continue;
+    const floorSec = isNeg ? -1 : Math.floor(sec);
+    const key = isNeg ? raw : String(floorSec);
+    if (seen.has(key)) continue;
+    seen.add(key);
     out.push({
+      rawTime: raw,
       seconds: floorSec,
-      timestamp: formatTimestamp(floorSec),
-      minuteLabel: `约第 ${Math.floor(floorSec / 60) + 1} 分钟`,
+      timestamp: isNeg ? raw : formatTimestamp(floorSec),
+      minuteLabel: isNeg ? '非法负时间' : `约第 ${Math.floor(floorSec / 60) + 1} 分钟`,
       note: '',
     });
   }
   return out;
 }
 
-function wdKtutNormalizeCitations(rawCitations, answerText) {
+export function normalizeAndVerifyQaCitations(rawCitations, answerText, segmentIndex, options = {}) {
   const out = [];
   const seen = new Set();
+  const pushVerified = cite => {
+    if (!cite) return;
+    const dedupeKey = cite.verified
+      ? `v:${cite.refKey || cite.segId || cite.seconds}`
+      : `u:${cite.reasonCode}:${cite.rawRef || cite.segId || cite.claimedSeconds || ''}`;
+    if (seen.has(dedupeKey)) return;
+    seen.add(dedupeKey);
+    out.push(cite);
+  };
+
   if (Array.isArray(rawCitations)) {
     for (const c of rawCitations) {
       if (!c) continue;
-      const rawTime = typeof c === 'string' ? c : (c.time ?? c.timestamp ?? c.seconds);
-      const sec = parseTimestampToSeconds(rawTime);
-      if (sec === null) continue;
-      const floorSec = Math.floor(sec);
-      if (seen.has(floorSec)) continue;
-      seen.add(floorSec);
-      out.push({
-        seconds: floorSec,
-        timestamp: formatTimestamp(floorSec),
-        minuteLabel: `约第 ${Math.floor(floorSec / 60) + 1} 分钟`,
-        note: typeof c === 'object' ? String(c.note || c.reason || c.excerpt || '').trim().slice(0, 40) : '',
+      const cleanNote = typeof c === 'object'
+        ? sanitizeCompleteText(c.note || c.reason || '', { maxLen: 40, allowShort: true, allowClauseSplit: true })
+        : '';
+      const rawObj = typeof c === 'object' ? { ...c, note: cleanNote } : c;
+      const verified = verifyCitation(rawObj, segmentIndex, {
+        claimText: typeof c === 'object' ? (c.note || c.reason || '') : '',
+        similarityThreshold: options.similarityThreshold,
       });
+      pushVerified(verified);
     }
   }
-  for (const item of extractTimestampsFromText(answerText)) {
-    if (seen.has(item.seconds)) continue;
-    seen.add(item.seconds);
-    out.push(item);
+
+  // Inline [S01] / ［S1］ references in answerText must also pass lookup verification!
+  for (const ref of extractSegmentIdsFromText(answerText)) {
+    const alreadyCovered = out.some(item => item.segId === ref.segId);
+    if (alreadyCovered) continue;
+    const verified = verifyCitation({ segId: ref.raw, sectionId: ref.sectionId }, segmentIndex, {
+      similarityThreshold: options.similarityThreshold,
+    });
+    pushVerified(verified);
   }
-  return out.slice(0, 6);
+
+  // Legacy inline mm:ss timestamps in answerText must ALSO pass the exact same verification (never bypass)!
+  for (const item of extractTimestampsFromText(answerText)) {
+    const alreadyCovered = out.some(c => c.verified && (c.seconds === item.seconds || (c.segStartSec <= item.seconds && item.seconds <= c.endSec)));
+    if (alreadyCovered) continue;
+    const verified = verifyCitation({ time: item.rawTime }, segmentIndex, {
+      similarityThreshold: options.similarityThreshold,
+    });
+    pushVerified(verified);
+  }
+  return out.slice(0, 8);
 }
 
 export function buildSectionQaMessages({ courseTitle, section, contextText, history = [], question }) {
   const system = [
-    '你是网大课程的课节级学习问答助教。请严格依据下方提供的「本课节知识点与带时间戳字幕片段」回答学员问题。',
+    '你是网大课程的课节级学习问答助教。请严格依据下方提供的「本课节知识点与带编号字幕分段」回答学员问题。',
     '核心要求：',
     '1. 严禁凭空编造课程未讲过的内容；若字幕中未提及，请直接说明「本课节字幕未提及该内容」，不要瞎编；',
-    '2. 回答必须标注依据大约在视频第几分钟以及精确 mm:ss 时间点（例如：「约第 2 分钟 (01:50)」）；',
-    '3. 优先输出合法 JSON（无多余前后缀）：{"answer":"简明易懂的中文回答，文内引用 (mm:ss)","citations":[{"time":"mm:ss","note":"依据简述(<=24字)"}]}；',
+    '2. 所有出处只能引用下方字幕提供的分段编号（在文内使用 [S01]、[S02] 格式标注），严禁自行估算或编造时间点，严禁引用不存在的编号；',
+    '3. 优先输出合法 JSON（无多余前后缀）：{"answer":"简明易懂的中文回答，文内只用 [S01] 形式标注出处","citations":[{"segId":"S01","quote":"对应原字幕关键词或短句(6~28字，用于核验)","note":"依据简述(<=24字)"}]}；',
     `当前课程：《${courseTitle || '当前课程'}》`,
     `当前课节：《${section?.title || '当前课节'}》`,
     '',
@@ -305,37 +518,19 @@ export function buildSectionQaMessages({ courseTitle, section, contextText, hist
 }
 
 async function wdKtutInvokeLlm({ settings, messages, gmRequest, fetchFn, signal, timeoutMs = 45000 }) {
-  const endpoint = buildChatCompletionsUrl(settings.baseUrl);
-  if (!settings.model?.trim()) throw new Error('未填写模型名');
-  const res = await sendAiHttpRequest({
-    transport: settings.transport,
+  const { content, channel } = await invokeAiChat({
+    settings,
+    messages,
+    temperature: 0.25,
     gmRequest,
     fetchFn,
-    url: endpoint,
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${settings.apiKey}`,
-    },
-    body: JSON.stringify({ model: settings.model, temperature: 0.25, messages }),
-    timeoutMs,
     signal,
+    timeoutMs,
   });
-  if (res.status < 200 || res.status >= 300) {
-    let detail = '';
-    try { const obj = JSON.parse(res.text); detail = obj?.error?.message || obj?.message || ''; } catch { detail = ''; }
-    if (res.status === 401 || res.status === 403) throw new Error(`API Key 无效或无权限（HTTP ${res.status}${detail ? `：${detail.slice(0, 80)}` : ''}）`);
-    if (res.status === 402 || res.status === 429) throw new Error(`额度耗尽或请求受限（HTTP ${res.status}${detail ? `：${detail.slice(0, 80)}` : ''}）`);
-    throw new Error(`接口返回错误（HTTP ${res.status}${detail ? `：${detail.slice(0, 80)}` : ''}）`);
-  }
-  let envelope;
-  try { envelope = JSON.parse(res.text); } catch { throw new Error('接口响应体不是合法 JSON'); }
-  const content = envelope?.choices?.[0]?.message?.content;
-  if (typeof content !== 'string' || !content.trim()) throw new Error('模型未返回有效回答内容');
-  return { content: content.trim(), channel: res.channel };
+  return { content: content.trim(), channel };
 }
 
-export async function askSectionQuestion({ win, courseTitle, courseId, section, question, settings, gmRequest, fetchFn, signal, maxContextChars = 7500, timeoutMs = 45000 }) {
+export async function askSectionQuestion({ win, courseTitle, courseId, section, question, sessionId = null, settings, gmRequest, fetchFn, signal, maxContextChars = 7500, timeoutMs = 45000, similarityThreshold } = {}) {
   const qText = String(question ?? '').trim();
   if (!qText) return { ok: false, error: '请输入你想提问的内容。' };
   if (!sectionHasSubtitle(section)) {
@@ -349,7 +544,7 @@ export async function askSectionQuestion({ win, courseTitle, courseId, section, 
   if (!cfg?.apiKey?.trim()) {
     return { ok: false, needsAiConfig: true, error: '需先配置 AI：请先点击「AI 设置」填写 Provider、Base URL 与 API Key。' };
   }
-  try { buildChatCompletionsUrl(cfg.baseUrl); } catch (err) {
+  try { validateAiEndpoint(cfg); } catch (err) {
     return { ok: false, needsAiConfig: true, error: `AI 配置无效（${err.message}），请检查「AI 设置」。` };
   }
   if (!cfg.model?.trim()) {
@@ -357,7 +552,8 @@ export async function askSectionQuestion({ win, courseTitle, courseId, section, 
   }
 
   const sectionId = section?.sectionId || 'current';
-  const stored = loadSectionChat(win, courseId, sectionId);
+  const stored = loadSectionChat(win, courseId, sectionId, sessionId);
+  const targetSessionId = sessionId || stored.activeSessionId;
   const ctx = selectRelevantSectionContext(section, qText, { maxContextChars });
   const messages = buildSectionQaMessages({
     courseTitle,
@@ -378,9 +574,9 @@ export async function askSectionQuestion({ win, courseTitle, courseId, section, 
         rawCitations = parsed.citations || parsed.evidence || parsed.references || [];
       }
     } catch {
-      // Graceful plain-text fallback: keep full answer text & extract mm:ss timestamps
+      // Graceful plain-text fallback: keep full answer text & extract/verify [Sxx] / mm:ss
     }
-    const citations = wdKtutNormalizeCitations(rawCitations, answer);
+    const citations = normalizeAndVerifyQaCitations(rawCitations, answer, ctx.segmentIndex, { similarityThreshold });
     const nowTs = Date.now();
     const userMsg = { id: `u-${nowTs}`, role: 'user', content: qText, createdAt: nowTs };
     const assistantMsg = {
@@ -395,9 +591,9 @@ export async function askSectionQuestion({ win, courseTitle, courseId, section, 
         truncated: ctx.truncated,
       },
     };
-    const nextMessages = [...stored.messages, userMsg, assistantMsg].slice(-wdKtutMaxMessagesPerSection);
-    saveSectionChat(win, courseId, sectionId, nextMessages);
-    return { ok: true, message: assistantMsg, messages: nextMessages, contextMeta: assistantMsg.contextMeta, channel };
+    const nextMessages = [...stored.messages, userMsg, assistantMsg].slice(-wdKtutMaxMessagesPerSession);
+    saveSectionChat(win, courseId, sectionId, nextMessages, targetSessionId);
+    return { ok: true, sessionId: targetSessionId, message: assistantMsg, messages: nextMessages, contextMeta: assistantMsg.contextMeta, channel };
   } catch (err) {
     return { ok: false, error: `AI 提问失败：${err?.message || err}` };
   }
@@ -405,14 +601,14 @@ export async function askSectionQuestion({ win, courseTitle, courseId, section, 
 
 export function buildSectionQuizPrompt({ courseTitle, section, contextText }) {
   const system = [
-    '你是企业培训课程出题教练。请严格根据下方本课节知识点与带时间戳字幕，出 4 道高质量自测题（默认 2~3 道单选题 + 1~2 道简答题，总题数 3~5 题）。',
+    '你是企业培训课程出题教练。请严格根据下方本课节知识点与带分段编号 [S01]、[S02]… 的字幕原文，出 4 道高质量自测题（默认 2~3 道单选题 + 1~2 道简答题，总题数 3~5 题）。',
     '只输出合法 JSON，不要任何前言或解释。',
     'JSON Schema：',
-    '{"questions":[{"type":"choice","question":"单选题干？","options":["A. 选项一","B. 选项二","C. 选项三","D. 选项四"],"correctIndex":0,"explanation":"解析并说明约在视频第几分钟讲到","time":"mm:ss"},{"type":"short","question":"简答题干？","referenceAnswer":"简洁参考答案要点","explanation":"解析与视频定位依据","time":"mm:ss"}]}',
+    '{"questions":[{"type":"choice","question":"单选题干？","options":["A. 选项一","B. 选项二","C. 选项三","D. 选项四"],"correctIndex":0,"explanation":"结合依据 [S01] 说明解析","segId":"S01","quote":"对应原字幕关键词或短句(6~24字)"},{"type":"short","question":"简答题干？","referenceAnswer":"简洁参考答案要点","explanation":"结合依据 [S01] 说明解析","segId":"S01","quote":"对应原字幕关键词或短句(6~24字)"}]}',
     '规则：',
     '1. 题目必须紧扣本课节核心知识点，不得编造字幕未提及的考点；',
     '2. 每道选择题必须恰好 4 个清晰选项且 correctIndex 为 0~3 的整数；',
-    '3. 每道题必须附带对应视频时间点 time (mm:ss) 与简明解析。',
+    '3. 每道题的出处只能引用输入字幕中存在的分段编号 segId（如 "S01"）并附原话短句 quote，在 explanation 中用 [S01] 标注依据，严禁编造不存在的编号或时间戳。',
   ].join('\n');
   const user = `课程：《${courseTitle || '当前课程'}》\n课节：《${section?.title || '当前课节'}》\n\n${contextText}`;
   return [
@@ -436,39 +632,87 @@ function wdKtutParseChoiceIndex(raw, optionsLen) {
   return 0;
 }
 
-export function normalizeQuizPaper(data) {
+export function normalizeQuizPaper(data, options = {}) {
   const rawList = Array.isArray(data?.questions) ? data.questions
     : Array.isArray(data?.quiz) ? data.quiz
     : Array.isArray(data?.items) ? data.items : [];
+  const segmentIndex = options.segmentIndex
+    || (options.section ? buildSegmentIndex(options.section) : null);
   const questions = [];
   for (const item of rawList) {
     if (!item || typeof item !== 'object') continue;
     const qText = String(item.question || item.q || item.prompt || '').trim();
     if (!qText) continue;
-    const sec = parseTimestampToSeconds(item.time ?? item.timestamp ?? item.seconds);
-    const floorSec = sec === null ? null : Math.floor(sec);
-    const ts = floorSec === null ? '' : formatTimestamp(floorSec);
     const rawOpts = Array.isArray(item.options) ? item.options.map(o => String(o ?? '').trim()).filter(Boolean) : [];
     const declaredType = String(item.type || '').toLowerCase();
     const isChoice = declaredType === 'choice' || declaredType === 'single' || declaredType === 'mcq' || rawOpts.length >= 2;
     const explanation = String(item.explanation || item.analysis || item.reason || '').trim();
 
+    // Verify citation via unified lookup table (both segId and legacy time MUST pass verification)
+    let citation = null;
+    let floorSec = null;
+    let ts = '';
+    let segId = null;
+    let refKey = null;
+    let citationStatus = 'none';
+    const inlineIds = extractSegmentIdsFromText(explanation);
+    const hasExplicitRef = Boolean(
+      item.segId !== undefined && item.segId !== null && item.segId !== ''
+      || item.seg_id !== undefined && item.seg_id !== null && item.seg_id !== ''
+      || item.ref !== undefined && item.ref !== null && item.ref !== ''
+      || item.time !== undefined && item.time !== null && item.time !== ''
+      || item.timestamp !== undefined && item.timestamp !== null && item.timestamp !== ''
+      || item.seconds !== undefined && item.seconds !== null && item.seconds !== ''
+      || inlineIds.length > 0,
+    );
+    if (hasExplicitRef) {
+      const refCandidate = {
+        ...item,
+        segId: item.segId ?? item.seg_id ?? item.ref ?? (inlineIds[0]?.raw || undefined),
+      };
+      if (segmentIndex) {
+        const claimForCheck = `${qText} ${explanation}`;
+        citation = verifyCitation(refCandidate, segmentIndex, {
+          claimText: claimForCheck,
+          similarityThreshold: options.similarityThreshold,
+        });
+        citationStatus = citation.status;
+        segId = citation.segId;
+        refKey = citation.refKey;
+        if (citation.verified) {
+          floorSec = citation.seconds;
+          ts = citation.timestamp;
+        }
+      } else {
+        const normId = normalizeSegmentId(refCandidate.segId);
+        const sec = parseTimestampToSeconds(item.time ?? item.timestamp ?? item.seconds);
+        segId = normId?.segId || null;
+        floorSec = sec === null ? null : Math.floor(sec);
+        ts = floorSec === null ? '' : formatTimestamp(floorSec);
+        citationStatus = segId || floorSec !== null ? 'unverified' : 'none';
+      }
+    }
+
     if (isChoice && rawOpts.length >= 2) {
-      const options = rawOpts.slice(0, 4).map((opt, idx) => {
+      const optionsList = rawOpts.slice(0, 4).map((opt, idx) => {
         const prefix = `${String.fromCharCode(65 + idx)}. `;
         return /^[A-D][.、:：\s]/iu.test(opt) ? opt : `${prefix}${opt}`;
       });
-      const correctIndex = wdKtutParseChoiceIndex(item.correctIndex ?? item.answerIndex ?? item.answer, options.length);
+      const correctIndex = wdKtutParseChoiceIndex(item.correctIndex ?? item.answerIndex ?? item.answer, optionsList.length);
       questions.push({
         id: `q-${questions.length + 1}`,
         type: 'choice',
         question: qText,
-        options,
+        options: optionsList,
         correctIndex,
         answerLetter: String.fromCharCode(65 + correctIndex),
-        explanation: explanation || `正确答案为 ${options[correctIndex]}${ts ? `（参见 ${ts}）` : ''}。`,
+        explanation: explanation || `正确答案为 ${optionsList[correctIndex]}${segId ? `（参见 [${segId}]）` : (ts ? `（参见 ${ts}）` : '')}。`,
         seconds: floorSec,
         timestamp: ts,
+        ...(segId ? { segId } : {}),
+        ...(refKey ? { refKey } : {}),
+        ...(citationStatus !== 'none' ? { citationStatus } : {}),
+        ...(citation ? { citation } : {}),
       });
     } else {
       const referenceAnswer = String(item.referenceAnswer || item.answer || item.a || explanation || '').trim();
@@ -478,9 +722,13 @@ export function normalizeQuizPaper(data) {
         type: 'short',
         question: qText,
         referenceAnswer,
-        explanation: explanation || (ts ? `详见视频约第 ${Math.floor(floorSec / 60) + 1} 分钟（${ts}）讲解。` : ''),
+        explanation: explanation || (segId ? `详见依据 [${segId}]${ts ? `（${ts}）` : ''}讲解。` : (ts ? `详见视频约第 ${Math.floor(floorSec / 60) + 1} 分钟（${ts}）讲解。` : '')),
         seconds: floorSec,
         timestamp: ts,
+        ...(segId ? { segId } : {}),
+        ...(refKey ? { refKey } : {}),
+        ...(citationStatus !== 'none' ? { citationStatus } : {}),
+        ...(citation ? { citation } : {}),
       });
     }
     if (questions.length >= 5) break;
@@ -521,15 +769,21 @@ export async function generateSectionQuiz({ win, courseTitle, courseId, section,
       error: section?.subtitleReason || '本课无字幕：该课节没有 AI 字幕，因此无法基于字幕用 AI 出题。',
     };
   }
+  const cfg = settings || loadAiSettings(win);
   if (!forceRefresh) {
     const cached = loadSectionQuiz(win, courseId, sectionId);
-    if (cached) return { ok: true, quiz: cached, fromCache: true };
+    if (cached) {
+      const sameProvider = !cached.provider || !cfg?.provider || cached.provider === cfg.provider;
+      const sameModel = !cached.model || !cfg?.model || cached.model === cfg.model;
+      if (!cfg?.apiKey?.trim() || (sameProvider && sameModel)) {
+        return { ok: true, quiz: cached, fromCache: true };
+      }
+    }
   }
-  const cfg = settings || loadAiSettings(win);
   if (!cfg?.apiKey?.trim()) {
     return { ok: false, needsAiConfig: true, error: '需先配置 AI：请先点击「AI 设置」填写 Provider、Base URL 与 API Key 后再使用「用 AI 出题」。' };
   }
-  try { buildChatCompletionsUrl(cfg.baseUrl); } catch (err) {
+  try { validateAiEndpoint(cfg); } catch (err) {
     return { ok: false, needsAiConfig: true, error: `AI 配置无效（${err.message}），请检查「AI 设置」。` };
   }
   if (!cfg.model?.trim()) {
@@ -544,7 +798,7 @@ export async function generateSectionQuiz({ win, courseTitle, courseId, section,
   try {
     const { content, channel } = await wdKtutInvokeLlm({ settings: cfg, messages, gmRequest, fetchFn, signal, timeoutMs });
     const parsed = parseStrictJsonContent(content);
-    const questions = normalizeQuizPaper(parsed);
+    const questions = normalizeQuizPaper(parsed, { segmentIndex: ctx.segmentIndex });
     const quizRecord = {
       cachedAt: Date.now(),
       sectionId,
