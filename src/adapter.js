@@ -581,6 +581,10 @@ export function readPage(document, hash) {
     if (resolvedMedia.status === 'resolved') {
       const media = resolvedMedia.target;
       const currentTime = media.currentTime, duration = media.duration;
+      // A source lets play() start loading even when the platform uses preload="none".
+      page.mediaReady = !media.paused || media.ended || media.readyState >= media.HAVE_METADATA
+        || Boolean(media.currentSrc || media.srcObject || media.getAttribute('src')?.trim()
+          || [...media.querySelectorAll('source[src]')].some(source => source.getAttribute('src').trim()));
       page.media = {
         ended: Boolean(media.ended),
         paused: Boolean(media.paused),

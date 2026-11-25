@@ -1,7 +1,7 @@
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 const wdBuildRoot = new URL('../', import.meta.url);
 const wdBuildPackage = JSON.parse(await readFile(new URL('package.json', wdBuildRoot), 'utf8'));
-const wdBuildFiles = ['core', 'adapter', 'queue', 'controller', 'panel', 'main'];
+const wdBuildFiles = ['core', 'adapter', 'queue', 'controller', 'knowledge-vtt', 'knowledge-ai', 'knowledge-tutor', 'knowledge-map', 'panel', 'main'];
 const wdBuildSources = await Promise.all(wdBuildFiles.map(async name => {
   const source = await readFile(new URL(`src/${name}.js`, wdBuildRoot), 'utf8');
   return source.replace(/^import\s+[^\r\n]+;\r?$/gmu, '').replace(/^export\s+(?=(?:async\s+)?(?:function|const|let|class)\b)/gmu, '')
@@ -13,7 +13,7 @@ const wdBuildMetadata = `// ==UserScript==
 // @version      ${wdBuildPackage.version}
 // @updateURL    https://raw.githubusercontent.com/ka1er/wangda-assistant/refs/heads/beta-channel/dist/wangda-assistant.user.js
 // @downloadURL  https://raw.githubusercontent.com/ka1er/wangda-assistant/refs/heads/beta-channel/dist/wangda-assistant.user.js
-// @description  手动勾选课程、管理多专区任务队列，按平台完成状态连续学习
+// @description  手动勾选课程、管理多专区任务队列，按平台完成状态连续学习，支持课程知识点导览与导图
 // @match        https://wangda.chinamobile.com/*
 // @run-at       document-idle
 // @noframes
@@ -21,6 +21,9 @@ const wdBuildMetadata = `// ==UserScript==
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
 // @grant        GM_notification
+// @grant        GM_xmlhttpRequest
+// @grant        unsafeWindow
+// @connect      *
 // ==/UserScript==
 `;
 await mkdir(new URL('dist/', wdBuildRoot), { recursive: true });
